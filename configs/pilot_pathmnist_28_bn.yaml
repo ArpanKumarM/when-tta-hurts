@@ -1,0 +1,77 @@
+# Phase 2A pilot configuration -- PREREGISTERED AND FROZEN before
+# implementation or execution (see docs/pilot_protocol.md for full
+# rationale and interpretation constraints). Committed as part of
+# "docs: preregister PathMNIST validation pilot" BEFORE any pilot code
+# exists. Do not edit after viewing pilot results without a documented
+# protocol amendment.
+
+phase: pilot
+confirmatory: false
+
+seed: 314159 # pilot-only seed; verified not in experiment_matrix.yaml's confirmatory [0, 1, 2]; permanently excluded from confirmatory results
+tta_seed: 271828 # separate, deterministic seed for the TTA view sequence, independent of model/training randomness
+
+dataset:
+  name: pathmnist
+  resolution: 28
+  root: data/raw
+  train_split: train
+  eval_split: val
+  test_split_allowed: false # enforced in code -- see src/when_tta_hurts/data.py test-set guard
+
+preprocessing:
+  scale_to_unit_interval: true # uint8 -> float32 [0,1] via ToTensor()
+  channel_standardization: false
+  train_time_augmentation: false
+  label_smoothing: false
+  class_weighting: false
+
+model:
+  architecture: small_cnn
+  normalization: batchnorm
+  num_classes: 9
+  expected_param_count: 94857 # must match tests/test_models.py; pilot fails loudly if it doesn't
+
+training:
+  optimizer: adam
+  learning_rate: 0.001
+  weight_decay: 0.0
+  loss: cross_entropy
+  max_epochs: 30
+  lr_schedule: cosine_annealing # over the full 30-epoch budget, not restarted by early stopping
+  early_stopping:
+    monitor: val_accuracy
+    patience: 5
+    min_delta: 0.0
+    restore_best: true
+  precision: float32
+  mixed_precision: false
+  target_batch_size: 256 # subject to scripts/benchmark_runtime.py's memory/runtime gate; see docs/pilot_protocol.md
+
+pilot_tta:
+  policy: mixed # frozen policy from docs/experimental_protocol.md, unchanged
+  aggregation: mean_probability
+  view_counts: [1, 2, 5, 10, 25, 50]
+  include_clean_anchor: false # augmented views only, matching the source paper's main experiment
+  nested_prefix: true # each view count uses a prefix of one deterministic 50-view sequence
+  eval_split: val
+
+metrics:
+  - clean_val_accuracy
+  - tta_val_accuracy_per_view_count
+  - delta_accuracy_per_view_count
+  - macro_f1
+  - negative_log_likelihood
+  - expected_calibration_error
+  - harm_rate # clean-correct -> TTA-wrong
+  - rescue_rate # clean-wrong -> TTA-correct
+  - training_time_seconds
+  - inference_time_seconds
+  - peak_mps_memory_bytes
+
+interpretation_constraints:
+  - "Exploratory validation results, not confirmatory findings."
+  - "Not usable in a paper abstract, workshop submission, or public claim."
+  - "No exact source-paper replication claim possible (source code unavailable)."
+  - "A non-negative TTA result must be reported honestly, not corrected by modifying augmentations."
+  - "Configuration is frozen; no changes after viewing results without a documented amendment."
