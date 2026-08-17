@@ -1,0 +1,34 @@
+# Engineering smoke-test configuration -- NOT an experimental config.
+# See docs/compute_budget.md and scripts/smoke_test.py. This config is
+# intentionally tiny and bounded; it is not part of configs/experiment_matrix.yaml.
+
+seed: 0
+device: auto
+
+dataset:
+  name: pathmnist
+  size: 28
+  root: data/raw
+  batch_size: 8
+  max_batches: 1 # only ever loads one small batch
+
+models:
+  - name: small_cnn_batchnorm
+    architecture: small_cnn
+    normalization: batchnorm
+  - name: small_cnn_groupnorm
+    architecture: small_cnn
+    normalization: groupnorm
+  - name: resnet18
+    architecture: resnet18
+
+optimizer:
+  name: adam
+  lr: 1.0e-3
+  max_steps: 2 # hard cap -- this is a smoke test, not training
+
+tta_smoke:
+  policy: mixed
+  num_views: 2 # smoke test only checks the mechanism works, not a real TTA sweep
+
+output_manifest_path: results/runs/smoke/env_manifest.json

@@ -59,9 +59,47 @@ not negligible and must be tracked separately so it isn't hidden inside the
   frozen configuration is run once against test data per the firewall in
   `docs/experimental_protocol.md`.
 
-Exact evaluation-job totals will be computed and logged in Phase 1 once the
-smoke test confirms per-job runtime; they are not estimated here to avoid
-presenting an unmeasured number as a commitment.
+Exact evaluation-job *counts* (how many inference passes) will be computed
+and logged once real runs exist; they are not estimated here. Their
+**storage footprint**, however, is estimated below since it must be
+budgeted before any caching begins.
+
+## Cache storage estimate (corrected)
+
+Formula: `samples x views x classes x 4 bytes` (float32 logits). Only
+logits are cached; probabilities/aggregates (mean, majority vote,
+confidence-weighted) and every view-count prefix (1/2/5/10/25/50/100) are
+derived from the same cached 100-view logit tensor, never cached
+separately — see `src/when_tta_hurts/evaluation/cache.py`.
+
+For validation+test at 100 views, per checkpoint/policy:
+
+| Dataset | (val+test) samples | Formula | Estimate |
+|---|---|---|---|
+| PathMNIST | 10,004 + 7,180 = 17,184 | 17,184 × 100 × 9 × 4 bytes | ≈ 59 MiB |
+| BloodMNIST | 1,712 + 3,421 = 5,133 | 5,133 × 100 × 8 × 4 bytes | ≈ 15.7 MiB |
+| DermaMNIST | 1,003 + 2,005 = 3,008 | 3,008 × 100 × 7 × 4 bytes | ≈ 8 MiB |
+
+Before conditional block D, the matrix contains **15 PathMNIST checkpoints,
+15 BloodMNIST checkpoints, and 3 DermaMNIST checkpoints** (blocks A+B: 12
+PathMNIST + 3 matched = 15; 12 BloodMNIST + 3 matched = 15; block C: 3
+DermaMNIST) requiring a cache:
+
+- **One policy:** 15×59 + 15×15.7 + 3×8 MiB ≈ **1.1 GiB**
+- **Three policies** (geometric/intensity/mixed): ≈ **3.3 GiB**
+
+With conditional block D (6 more PathMNIST+BloodMNIST checkpoints at
+128px — logit storage doesn't depend on input resolution, only on
+sample/view/class counts): ≈ **4 GiB for three policies**.
+
+This is logits only, **before**: checkpoints themselves, labels/metadata,
+temporary files, BN-adapted inference (not cacheable this way — it mutates
+model state, must be tracked as separate inference per
+`evaluation/cache.py`), and additional validation artifacts.
+
+**Practical working-storage allowance: approximately 5-8 GB**, not the
+~1-4GB logit-only figure alone. This must be checked against available
+disk space before any real caching begins in Phase 2+.
 
 ## Staging
 
@@ -126,3 +164,39 @@ within the 30-40 run target as scoped. This resolves the "Open problem"
 flagged in the prior version of this document. Remaining unknowns are
 runtime/memory measurements themselves, which require Phase 1 (not yet
 approved) to obtain.
+
+## Actual hardware (measured in Phase 1) — deviation from the stated constraint
+
+The project's hard constraint specifies "Apple Silicon M4, 16 GB unified
+memory." The machine this Phase 1 work actually ran on, per
+`sysctl`/`sw_vers`, is an **Apple M3 Pro with 18 GB unified memory**
+(macOS 15.7.7). This is recorded here rather than silently substituted:
+the M3 Pro is a different (though architecturally similar) chip with 2GB
+more memory than specified. All device/memory reasoning in this document
+should be read as applying to the actual machine, and the environment
+manifest (`results/runs/<run_id>/env_manifest.json`, captured by
+`when_tta_hurts.devices.capture_environment`) records the real chip/memory
+for every run so this is auditable, not assumed. If the discrepancy
+matters (e.g. the user intends to later run confirmatory experiments on an
+actual M4/16GB machine), runtime/memory kill criteria measured here may not
+transfer exactly and should be re-measured on the target hardware.
+
+## Software stack and version rationale
+
+- **Python 3.12** (`.python-version`, `pyproject.toml`): chosen as the
+  `uv init` default and because it is a mature, broadly-supported version
+  for the current stable PyTorch release with full MPS wheel availability,
+  while still being new enough to have good typing/performance
+  improvements over 3.10/3.11. Not 3.13 because ecosystem package wheel
+  coverage (e.g. scikit-image, kornia) is more consistently available for
+  3.12 at time of writing.
+- **PyTorch 2.13.0 / torchvision 0.28.0** (resolved and locked by `uv lock`
+  against the environment above): the latest stable release available at
+  resolution time with confirmed MPS support (`torch.backends.mps.is_built()
+  == True`, `is_available() == True` on this machine — see Phase 1
+  completion report). Exact versions are pinned in `uv.lock`, not just
+  `pyproject.toml`'s lower bounds, so the resolved environment is
+  reproducible.
+- All other dependency versions are recorded in `uv.lock` (committed
+  nowhere yet, per Phase 1 scope — see CLAUDE.md) and reported in the Phase
+  1 completion report.

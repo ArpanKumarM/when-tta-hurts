@@ -1,9 +1,14 @@
 # Data and Licensing
 
-**Status: Phase 0, correction pass applied. Findings below come from
-directly opening medmnist.com, the MedMNIST GitHub repo, and
-`on_medmnist_plus.md` (see `docs/literature_review.md` for full citation
-details). No data has been downloaded.**
+**Status: Phase 1 update. Findings below come from directly opening
+medmnist.com, the MedMNIST GitHub repo, `on_medmnist_plus.md`, and — new in
+this update — the `medmnist` Python package's own shipped `INFO` metadata
+(a primary source distributed with the official package itself, inspected
+directly via `get_dataset_metadata()` in `src/when_tta_hurts/data.py`, not
+downloaded dataset images). The 28px PathMNIST `.npz` was downloaded for
+smoke-testing purposes only (git-ignored, checksum-verified — see
+`docs/` Phase 1 completion report) and its imagery was not inspected beyond
+what the smoke test exercises (shapes/dtype/finiteness).**
 
 The repository must not redistribute MedMNIST data. Datasets are loaded at
 runtime via the official `medmnist` package in Phase 1+; nothing under
@@ -25,16 +30,130 @@ non-commercial.
 Source: medmnist.com and github.com/MedMNIST/MedMNIST, fetched directly
 during Phase 0 (see `docs/literature_review.md` §2).
 
-## Attribution requirements
+## Attribution requirements — complete source-dataset citations
 
 MedMNIST requires citing "the corresponding paper(s) of source data if you
-use any subset" — i.e., citation of both the MedMNIST v2/MedMNIST+ paper(s)
-*and* the original source dataset each subset is derived from. **The exact
-original source dataset names/citations for PathMNIST, BloodMNIST, and
-DermaMNIST were not found on the pages fetched in Phase 0 and are
-UNVERIFIED.** MedMNIST provides a per-subset CSV mapping images to source
-datasets; obtaining and recording these citations is a Phase 1 task and
-must be completed before any public release or figure using these datasets.
+use any subset." Full citations, verified against primary sources (or, for
+HAM10000's full text, verified against the citation-metadata fields
+reachable given a CAPTCHA/login wall on the publisher page — see caveat
+below):
+
+**PathMNIST source — NCT-CRC-HE-100K / CRC-VAL-HE-7K:**
+Kather, J.N., Halama, N., Marx, A. (2018). *100,000 histological images of
+human colorectal cancer and healthy tissue* [Data set]. Zenodo.
+https://doi.org/10.5281/zenodo.1214456 (dataset DOI, standard citation for
+NCT-CRC-HE-100K/CRC-VAL-HE-7K). Per the `medmnist` package's own
+description: *"We resize the source images of 3×224×224 into 3×28×28, and
+split NCT-CRC-HE-100K into training and validation set with a ratio of
+9:1. The CRC-VAL-HE-7K is treated as the test set."*
+
+**DermaMNIST source — HAM10000:**
+Tschandl, P., Rosendahl, C., Kittler, H. (2018). *The HAM10000 dataset, a
+large collection of multi-source dermatoscopic images of common pigmented
+skin lesions.* Scientific Data, 5, 180161.
+https://doi.org/10.1038/sdata.2018.161 —
+primary source: https://www.nature.com/articles/sdata2018161 (page could
+not be fetched directly in this pass; blocked by a login/CAPTCHA
+redirect — see verification caveat below).
+
+**BloodMNIST source — Acevedo et al. peripheral blood cell dataset:**
+Acevedo, A., Merino, A., Alférez, S., Molina, Á., Boldú, L., Rodellar, J.
+(2020). *A dataset for microscopic peripheral blood cell images for
+development of automatic recognition systems.* Mendeley Data, V1.
+https://doi.org/10.17632/snkd93bnjr.1 (verified directly — page confirms
+17,092 individual normal cell images across 8 classes, "captured from
+individuals without infection, hematologic or oncologic disease and free
+of any pharmacologic treatment at the moment of blood collection." No
+subject count or subject-grouping statement is given on the page.)
+
+**Verification caveat on HAM10000's lesion-multiplicity claim:** the
+Nature Scientific Data page for this paper redirected to a login wall and
+could not be fetched directly in this pass. The facts recorded below (that
+HAM10000 contains multiple images of some lesions, captured at different
+magnifications/angles/cameras, and that the released metadata includes a
+`lesion_id` field) are recorded per your instruction as verified facts to
+document; they are consistent with this paper's well-established public
+description but were not independently re-confirmed by this project
+reading the primary page's full text in this pass. This should be
+re-verified against the primary source directly (or the HAM10000 metadata
+CSV itself, which is a more direct check) before this claim is used in any
+public report.
+
+## Provenance / leakage investigation
+
+**Correction note:** the PathMNIST classification below was corrected —
+"different clinical center" is NOT equated with "verified patient/slide
+group separation." Center separation is real and documented, but patient-
+and slide-identifier disjointness has not itself been checked against any
+identifier data (this project has not obtained per-image patient/slide IDs
+for either NCT-CRC-HE-100K/CRC-VAL-HE-7K). DermaMNIST was also
+reclassified, from "unverifiable" to "potential lesion leakage," given the
+HAM10000 facts recorded above.
+
+Per the requirement not to infer "patient-independent" from a random
+image-level split, each dataset is classified below using ONLY what is
+explicitly stated in available primary/primary-adjacent sources — no
+assumption of leakage-freedom is made where a source is silent.
+
+| Dataset | What is stated | Classification |
+|---|---|---|
+| **PathMNIST — test vs. train+val** | Per `medmnist` package metadata: CRC-VAL-HE-7K (test) comes from a different clinical center than NCT-CRC-HE-100K (train/val). | **External-center test set: CRC-VAL-HE-7K comes from a different clinical center than NCT-CRC-HE-100K. Patient- and slide-identifier disjointness has not been independently verified from identifiers available to this project.** |
+| **PathMNIST — train vs. val** | Described only as "split NCT-CRC-HE-100K into training and validation set with a ratio of 9:1" — a ratio split of patches, no stated slide-grouping guarantee. | **Potential source leakage: the split is described as a ratio split of patches from NCT-CRC-HE-100K, without a verified slide-grouping guarantee.** |
+| **BloodMNIST — all splits** | Acevedo et al.'s dataset contains 17,092 individual-cell images "captured from individuals without infection, hematologic or oncologic disease..."; neither the Mendeley Data page nor the `medmnist` package states how many subjects contributed images or whether MedMNIST's 7:1:2 split is subject-grouped. | **Subject-level independence unverifiable: public metadata does not provide this project with verified subject-grouped MedMNIST splits.** |
+| **DermaMNIST — all splits** | HAM10000 (Tschandl et al. 2018) is recorded as containing multiple images of some of the same lesions, captured at different magnifications, angles, or with different cameras, with lesion identifiers (`lesion_id`) present in the source metadata (see verification caveat above). MedMNIST's own description states only a 7:1:2 split ratio and does not document lesion-grouped splitting. | **Potential lesion leakage: HAM10000 contains multiple images of some lesions under a shared lesion identifier, and MedMNIST does not document whether its 7:1:2 split groups by lesion — so the same lesion's images may appear across train/val/test.** |
+
+**What generalization claims the split structure permits (restrained
+interpretation):** For PathMNIST, test performance can be described as
+reflecting an external-center evaluation — a meaningfully different data
+source from train/val — but NOT as "patient-independent" or
+"slide-independent," since that has not been verified from actual
+identifiers. For BloodMNIST, test performance should be described as "held
+-out accuracy under the official MedMNIST split" only. For DermaMNIST,
+test performance should carry the same caveat plus an explicit note of
+potential lesion-level leakage inflating apparent accuracy, since the same
+lesion's images could appear in both train and test. No dataset in this
+project should be described as "patient-independent" or
+"subject-independent" without identifier-level verification this project
+has not performed.
+
+## Dataset-validity risk: low-level biases in NCT-CRC-HE (PathMNIST source)
+
+**A preprint** (not established fact, not peer-reviewed — flagged
+explicitly as such): Ignatov, A., Malivenko, G. (2024). *"NCT-CRC-HE: Not
+All Histopathological Datasets Are Equally Useful."* arXiv:2409.11546,
+submitted 17 Sep 2024, CC BY-NC-SA 4.0.
+https://arxiv.org/abs/2409.11546
+
+This preprint reports that NCT-CRC-HE-100K — PathMNIST's source dataset —
+has inappropriate color normalization, severe class-inconsistent JPEG
+artifacts, and some completely corrupted tissue samples. It reports that a
+model using only the 3 raw RGB channel-mean features per image reaches over
+50% accuracy on the 9-class task, and that color-histogram features alone
+reach over 82% accuracy — and that a standard ImageNet-pretrained
+EfficientNet-B0 reaches over 97.7% accuracy, exceeding prior specialized
+histopathology models. This suggests classification success on this
+dataset can be substantially explained by low-level color/artifact
+statistics rather than tissue morphology.
+
+**Relevance to this project (documented risk, not a hypothesis change):**
+if PathMNIST classification is partly driven by such low-level, non
+-morphological signals, then TTA's geometric and intensity transforms could
+be disrupting those specific low-level statistics (color histograms, JPEG
+artifact patterns) rather than — or in addition to — disrupting BatchNorm
+statistics or genuine morphological feature extraction. This is a plausible
+confound for interpreting PathMNIST's large reported TTA degradation
+(H1/H2 in `docs/research_plan.md`): a TTA failure driven by color-jitter
+disrupting a color-histogram shortcut is a different phenomenon from a TTA
+failure driven by BatchNorm running-statistics mismatch, even though both
+would show up as "TTA hurts PathMNIST accuracy." **The pre-registered
+hypotheses (H1-H4) are not changed by this.** This is recorded as an
+interpretive risk to flag explicitly when PathMNIST results are reported —
+any causal claim about *why* TTA hurts PathMNIST should note this
+alternative/contributing explanation and, where feasible, report whether
+intensity-only vs. geometric-only TTA policies degrade PathMNIST
+differently (the source paper's own finding that "intensity-only
+augmentations outperform geometric transforms" is worth re-examining in
+this light, though that is exploratory, not a new hypothesis).
 
 ## Non-clinical-use disclaimer (verified, quoted exactly)
 
@@ -62,7 +181,7 @@ files is retracted — it is false for these three datasets.** H2 evaluates
 genuinely retained source-image information at each standardized
 resolution. See `docs/research_plan.md`'s corrected H2 wording.
 
-## Official split sizes (verified)
+## Official split sizes (verified twice: doc pages, then programmatically)
 
 | Dataset | Train | Validation | Test |
 |---|---|---|---|
@@ -70,15 +189,45 @@ resolution. See `docs/research_plan.md`'s corrected H2 wording.
 | BloodMNIST | 11,959 | 1,712 | 3,421 |
 | DermaMNIST | 7,007 | 1,003 | 2,005 |
 
-## Open questions (UNVERIFIED — must resolve before Phase 1 download)
+**Split-count verification (corrected — precise per-dataset wording):**
 
-- **Patient/source-level leakage:** no explicit statement was found
-  confirming splits are leakage-free at the patient or source level. Do not
-  assume independence between train/val/test at the patient level until
-  this is checked against the MedMNIST Scientific Data (2023) paper.
-- **Original source-dataset citations:** exact upstream dataset names for
-  PathMNIST/BloodMNIST/DermaMNIST (needed for attribution) — not yet
-  retrieved from MedMNIST's per-subset provenance CSVs.
+- **PathMNIST: split counts verified from the downloaded 28px artifact.**
+  `data/raw/pathmnist.npz` (209MB, MD5-checksum-matched — see below) was
+  downloaded for smoke testing, and its `train_images`/`val_images`/
+  `test_images` array shapes were read directly and match
+  `EXPECTED_SPLITS` exactly (see
+  `src/when_tta_hurts/data.py::verify_split_counts_from_artifact()` and
+  `tests/test_data_artifact.py`).
+- **BloodMNIST: split counts verified against `medmnist` 3.0.2 `INFO`
+  metadata; image artifact not downloaded.** No BloodMNIST `.npz` file has
+  been fetched in this project. The counts above come only from the
+  package's shipped metadata dict (see
+  `src/when_tta_hurts/data.py::verify_split_counts()`), not from inspecting
+  actual image data.
+- **DermaMNIST: split counts verified against `medmnist` 3.0.2 `INFO`
+  metadata; image artifact not downloaded.** Same caveat as BloodMNIST —
+  metadata-only verification.
+
+This distinction matters: metadata could in principle be stale or wrong
+even if consistently repeated across doc pages and the package, whereas the
+PathMNIST artifact check reads the actual array shapes. Do not describe
+BloodMNIST or DermaMNIST as having been "empirically verified" or
+"inspected" — only their metadata has been checked.
+
+## Open questions — status after Phase 1 investigation
+
+- **Patient/source-level leakage — investigated, not fully resolved.**
+  See the "Provenance / leakage investigation" section above: PathMNIST's
+  test split is verified center-disjoint from train/val; PathMNIST
+  train-vs-val, BloodMNIST (all splits), and DermaMNIST (all splits) are
+  classified as potential-leakage or unverifiable, not confirmed
+  leakage-free. Any generalization claim in a future report must respect
+  this per-dataset asymmetry.
+- **Original source-dataset citations — dataset names resolved, full
+  citations still pending.** NCT-CRC-HE-100K/CRC-VAL-HE-7K (PathMNIST) and
+  HAM10000 (DermaMNIST) are now identified by name from the package's own
+  metadata; exact BibTeX-form citations for these upstream papers still
+  need to be added before any public release.
 
 ## Target preprint license and code status (verified)
 

@@ -11,10 +11,21 @@ as untested assumptions.
 
 - **SmallCNN** — primary model for the causal ablation matrix (H1–H3).
   Source paper spec: ~95K parameters, 3 convolutional layers, BatchNorm,
-  MaxPool. Our GroupNorm variant substitutes GroupNorm for BatchNorm in the
-  same architecture; exact channel widths/depths to be finalized in Phase 1
-  and frozen in a config file before any run, so they aren't tuned against
-  results.
+  MaxPool. No reference code is available (the paper's linked repo 404s —
+  see `docs/data_and_licensing.md`), so this is a **paper-constrained
+  reimplementation, not an exact reproduction of unavailable source code**.
+  Frozen in Phase 1 (`src/when_tta_hurts/models/small_cnn.py`): channel
+  widths 32→64→128, GroupNorm fixed at 8 groups (evenly divides all three
+  widths), and — critically — **global average pooling instead of a
+  flatten-based head**, so the parameter count (94,857 for a 9-class head,
+  measured) is IDENTICAL at 28px, 64px, and 128px. This resolution
+  independence is a correctness requirement for H2: without it, any
+  TTA-degradation difference observed across resolutions would be
+  confounded by the model also having a different number of parameters at
+  each resolution. BatchNorm and GroupNorm variants are also verified to
+  have identical parameter counts (same conv bias policy in both), so H1's
+  comparison isn't confounded by capacity differences either. See
+  `tests/test_models.py` for the enforcing tests.
 - **ResNet-18** — source paper spec: ~11M parameters, adapted for 28×28
   input (no initial pooling layer). Used only for (a) exact baseline
   reproduction of the source paper's reported numbers, and (b) the
@@ -51,6 +62,45 @@ as untested assumptions.
   aggregation — this is the primary reproduction target.
 - Aggregation methods: mean probability, majority vote, confidence-weighted
   average.
+
+## Frozen augmentation parameters
+
+The source paper specifies transform families and headline ranges
+(Section 4.3) but not every implementation detail. The table below is the
+**authoritative, frozen specification** implemented in
+`src/when_tta_hurts/transforms/policies.py` — per CLAUDE.md, these values
+must not change silently after observing pilot results; any change requires
+a protocol amendment (a visible, dated addition to this document, not a
+silent edit).
+
+| Transform | App. probability | Parameter range | Interpolation | Fill/border | Antialias | Order (within policy) | Sampled independently per view? | Source-specified vs. our choice |
+|---|---|---|---|---|---|---|---|---|
+| Horizontal flip | 0.5 | — | n/a | n/a | n/a | 1st | Yes (`same_on_batch=False`, seeded per view) | Paper specifies the transform; probability is our choice (standard 0.5). |
+| Vertical flip | 0.5 | — | n/a | n/a | n/a | 2nd | Yes | Paper specifies the transform; probability is our choice. |
+| Rotation | 1.0 | ±15° | Bilinear (kornia `resample="BILINEAR"`) | kornia library default — not independently exposed as a separate fill/border parameter in this kornia version (0.8.3) | Not exposed by this kornia version | 3rd | Yes | Range (±15°) is paper-specified; interpolation/fill are our choice, constrained by what this kornia version exposes. |
+| Random resized crop | 1.0 | scale 0.8–1.0 | Bilinear (kornia `resample="BILINEAR"`) | n/a (crop, not padding) | Not exposed by this kornia version | 4th | Yes | Scale range is paper-specified; **aspect-ratio range (3/4–4/3) is NOT paper-specified — kornia's conventional default, frozen explicitly in code.** Interpolation is our choice. |
+| Color jitter (brightness+contrast) | 1.0 | ±0.3 each | n/a | n/a | n/a | 5th (mixed policy only) | Yes | Range (±0.3) is paper-specified; probability is our choice. **Operation order between brightness and contrast is randomized internally by kornia's `ColorJitter` per call and is not independently configurable in this kornia version** — documented here rather than silently left unspecified. |
+| Gaussian blur | 0.5 | kernel 3×3, sigma 0.1–2.0 | n/a | `border_type="reflect"` (kornia default) | n/a | 6th (mixed policy only) | Yes | **Entirely our choice — the paper names "Gaussian blur" but gives no kernel/sigma/probability.** Per your instruction: conservative documented configuration, kernel 3×3, sigma sampled from 0.1–2.0, probability 0.5. |
+
+**Mixed-policy ordering (frozen):** geometric ops strictly before intensity
+ops — flip(H) → flip(V) → rotation → resized crop → color jitter → Gaussian
+blur. This ordering is our choice (not paper-specified) and is frozen.
+
+**Normalization placement relative to augmentation (frozen, for future
+implementation):** augmentation is applied to the `[0,1]`-range tensor
+produced by `ToTensor()`, BEFORE any per-channel mean/std normalization.
+Mean/std normalization (not yet implemented as of Phase 1 — datasets
+currently load as raw `[0,1]` tensors, see `data.py`) will be applied last,
+after all augmentation, consistent with standard practice and so that
+augmentation parameter ranges (e.g. brightness ±0.3) are interpretable in
+the original pixel-intensity scale rather than a normalized scale.
+
+**Per-sample vs. per-view independence:** every op above uses
+`same_on_batch=False`, so within one view, each sample in a batch gets an
+independently sampled transform. Across views, `sample_deterministic_view()`
+reseeds with a distinct seed per view (see
+`transforms/policies.py::sample_deterministic_view`), so views are also
+independent of each other.
 
 ## Conditions
 

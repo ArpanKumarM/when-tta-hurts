@@ -51,8 +51,14 @@ resolution_note: >
 
 models:
   - name: small_cnn
-    params_approx: 95000
-    architecture_note: "3 conv layers, BatchNorm, MaxPool (per source paper Table 1)"
+    params_exact: 94857  # measured, num_classes=9 (PathMNIST); resolution-independent (28/64/128 identical)
+    architecture_note: >
+      Paper-constrained reimplementation (paper specifies only "3 conv
+      layers, BatchNorm, MaxPool, ~95K params", no reference code
+      available -- see src/when_tta_hurts/models/small_cnn.py docstring
+      and docs/experimental_protocol.md). Uses global average pooling
+      (not flatten) so parameter count is identical at every resolution,
+      which the 28-vs-64(-vs-128) comparison (H2) requires.
     role: primary_causal_ablation_model
     normalization_variants: [batchnorm, groupnorm]  # no_running_stats removed, see below
   - name: resnet18

@@ -1,0 +1,40 @@
+[project]
+name = "when-tta-hurts"
+version = "0.1.0"
+description = "A causal audit of test-time augmentation failure modes in medical imaging (MedMNIST)."
+authors = [
+    { name = "Arpan Kumar Mahapatra" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "kornia>=0.8.3",
+    "medmnist>=3.0.2",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pyyaml>=6.0.3",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.18.0",
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
