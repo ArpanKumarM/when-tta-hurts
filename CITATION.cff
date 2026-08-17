@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: >-
+  This repository is in Phase 0 (planning/pre-registration). If you use it,
+  please cite it as a work in progress; no results or findings are claimed
+  yet. Please also cite the primary source this project reproduces and
+  extends (see references below).
+title: "When TTA Hurts: A Causal Audit of Test-Time Augmentation in Medical Imaging"
+type: software
+version: "0.0.0-phase0"
+date-released: "2026-08-17"
+authors:
+  - name: "Arpan Kumar Mahapatra"
+license: "TODO: finalize per docs/data_and_licensing.md before public release"
+repository-code: "TODO: fill in once repository is public"
+references:
+  - type: preprint
+    title: >-
+      I Can't Believe TTA Is Not Better: When Test-Time Augmentation Hurts
+      Medical Image Classification
+    url: "https://arxiv.org/html/2604.09697v1"
+    notes: >-
+      Primary source this project reproduces and extends. Treated as an
+      unreviewed preprint; see docs/literature_review.md for verification
+      status of its claims.
+  - type: data
+    title: "MedMNIST v2 / MedMNIST+"
+    url: "https://medmnist.com/"
+    notes: >-
+      Dataset source. See docs/data_and_licensing.md for verified license
+      terms and the official non-clinical-use disclaimer.

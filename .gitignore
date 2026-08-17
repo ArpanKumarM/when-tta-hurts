@@ -1,0 +1,38 @@
+# Data (never commit datasets)
+data/raw/
+data/processed/
+*.npz
+
+# Results (generated artifacts, regenerated from raw + scripts; per-run data can be large)
+results/runs/
+results/figures/*.png
+results/figures/*.pdf
+!results/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Logs / env
+*.log
+.env
+
+# Local Claude Code session state (not project content)
+.claude/

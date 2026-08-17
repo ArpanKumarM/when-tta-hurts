@@ -1,0 +1,189 @@
+# Phase 0 experiment matrix — CORRECTED per verified source-paper facts.
+# NOT APPROVED, NOT EXECUTED. No run described here has been launched.
+#
+# Correction history: this matrix was revised after reading the full text
+# (arxiv.org/html/2604.09697v1, both appendices) and the MedMNIST+
+# construction doc (github.com/MedMNIST/MedMNIST/blob/main/on_medmnist_plus.md).
+# See docs/literature_review.md and docs/compute_budget.md for the sourcing
+# behind every number below.
+#
+# Status values:
+#   draft     — proposed, not reviewed
+#   approved  — signed off by user, may be executed in Phase 1+
+#   executed  — has a corresponding row in results/ledger.csv
+status: draft
+
+hardware:
+  device: apple_silicon_m4
+  memory_gb: 16
+  backend: pytorch_mps
+  notes: >
+    No CUDA. All runtime/memory estimates are placeholders until a smoke
+    test is run in Phase 1 to measure actual MPS throughput.
+
+seeds:
+  confirmatory: [0, 1, 2]
+  # One-seed pilots are exploratory scaffolding for pipeline validation
+  # only (Phase 1), not a separate reduced-scope matrix, and are never
+  # reported as confirmatory results (see statistical_analysis_plan.md).
+
+datasets:
+  # Official MedMNIST split counts, per source-paper verification.
+  - name: pathmnist
+    role: primary_high_sensitivity
+    splits: {train: 89996, val: 10004, test: 7180}
+    source_resolution_for_plus: "3x224x224 (resized directly, no crop)"
+  - name: bloodmnist
+    role: primary_high_sensitivity
+    splits: {train: 11959, val: 1712, test: 3421}
+    source_resolution_for_plus: "3x360x363, center-cropped to 3x200x200, then resized"
+  - name: dermamnist
+    role: positive_control_reported_positive_case
+    splits: {train: 7007, val: 1003, test: 2005}
+    source_resolution_for_plus: "3x600x450 (resized directly, no crop)"
+
+resolution_note: >
+  MedMNIST+ 64/128px images are resized from independently higher-resolution
+  source images (not upsampled from the 28px files) and preserve sample
+  indices and splits across resolutions. See docs/data_and_licensing.md.
+  H2 therefore evaluates retained source-image information at different
+  standardized resolutions, not interpolation artifacts of the 28px data.
+
+models:
+  - name: small_cnn
+    params_approx: 95000
+    architecture_note: "3 conv layers, BatchNorm, MaxPool (per source paper Table 1)"
+    role: primary_causal_ablation_model
+    normalization_variants: [batchnorm, groupnorm]  # no_running_stats removed, see below
+  - name: resnet18
+    params_approx: 11000000
+    architecture_note: "adapted for 28x28, no initial pooling layer (per source paper Table 1)"
+    role: baseline_reproduction_and_confirmation_only
+    normalization_variants: [batchnorm]
+
+normalization_variant_note: >
+  no_running_stats has been REMOVED from the confirmatory matrix to fit the
+  compute budget (was previously a third H1 arm). If budget allows after
+  pilot measurement, it may be added back as an EXPLORATORY (not
+  confirmatory) arm at 28px only, on a subset of cells, per
+  statistical_analysis_plan.md's confirmatory/exploratory separation.
+
+tta_view_counts: [1, 2, 5, 10, 25, 50, 100]  # per source paper Section 4.3
+
+augmentation_policies:
+  geometric: "flips, rotation (+/-15deg), random resized crop (0.8-1.0x)"
+  intensity: "brightness/contrast jitter (+/-0.3), Gaussian blur"
+  mixed: "geometric + intensity"
+  # Source paper's headline failure result uses MIXED policy, mean
+  # aggregation, N=50 views. Naive-TTA reproduction below targets that
+  # exact condition first.
+
+aggregation_methods: [mean_probability, majority_vote, confidence_weighted_average]
+
+conditions:
+  - id: clean
+    description: single unaugmented forward pass
+  - id: naive_tta
+    description: >
+      mean probability over augmented views, mixed policy, reproducing the
+      source paper's headline condition where feasible (N=50 as primary,
+      full view-count curve 1/2/5/10/25/50/100 as secondary)
+  - id: original_anchored_tta
+    description: >
+      original (clean) image included alongside augmented views in the
+      aggregate. This condition is FROM THE SOURCE PAPER'S APPENDIX B, not
+      a contribution of this project — see docs/claims_and_risks.md. Used
+      as a required baseline for H4.
+  - id: bn_adapted_tta
+    description: >
+      basic BatchNorm-statistics adaptation using the augmented-batch
+      distribution, as evaluated in the source paper's Appendix B. Also NOT
+      a contribution of this project — required baseline for H4, applicable
+      only to BatchNorm cells.
+  - id: matched_tta
+    description: train-time augmentation distribution matches test-time TTA policy (H3)
+  - id: validation_gated_tta
+    description: >
+      validation-selected transforms, always includes clean prediction,
+      rejects consistently harmful transforms, optional per-sample
+      divergence-threshold rejection, falls back to clean when insufficient
+      views remain. Algorithm frozen in docs/experimental_protocol.md
+      BEFORE any test-set evaluation. Compared against all conditions
+      above, per H4 in docs/research_plan.md.
+
+# =====================================================================
+# TRAINING RUNS (unique trained checkpoints) — counted separately from
+# TTA/evaluation jobs, which reuse checkpoints and are far more numerous
+# because of the 7 view counts x 3 aggregation methods x 5 TTA-family
+# conditions. See "evaluation_jobs" section below and
+# docs/compute_budget.md for the full accounting.
+# =====================================================================
+
+training_matrix:
+
+  A_core_normalization_resolution:
+    description: >
+      Core causal matrix for H1 (normalization) and H2 (resolution).
+    datasets: [pathmnist, bloodmnist]
+    resolutions: [28, 64]
+    normalization_variants: [batchnorm, groupnorm]
+    seeds: [0, 1, 2]
+    training_runs: 24  # 2 datasets x 2 resolutions x 2 norms x 3 seeds
+
+  B_policy_matching:
+    description: >
+      H3 (train/test augmentation policy matching). Unmatched checkpoints
+      for these cells already exist in A (pathmnist/bloodmnist, 28px,
+      batchnorm) — only the MATCHED-policy checkpoints are new runs here.
+    datasets: [pathmnist, bloodmnist]
+    resolution: 28
+    normalization: batchnorm
+    training_policy: matched_to_approved_tta_policy
+    seeds: [0, 1, 2]
+    training_runs: 6  # 2 datasets x 1 resolution x 1 norm x 3 seeds
+    reuses_checkpoints_from: A_core_normalization_resolution  # for the unmatched comparison arm
+
+  C_positive_control_reproduction:
+    description: >
+      Reproduction of the source paper's sole positive case (ResNet-18 on
+      DermaMNIST, +1.6pp at N=50) as a confirmatory positive control.
+    datasets: [dermamnist]
+    model: resnet18
+    resolution: 28
+    normalization: batchnorm
+    seeds: [0, 1, 2]
+    training_runs: 3  # 1 dataset x 1 model x 1 resolution x 1 norm x 3 seeds
+
+  D_conditional_128px:
+    description: >
+      CONDITIONAL — only executed if the documented runtime/memory kill
+      criterion in docs/compute_budget.md passes after measuring the 64px
+      tier. Strengthens H2 as a trend claim only if all 3 seeds complete.
+    datasets: [pathmnist, bloodmnist]
+    resolution: 128
+    normalization: batchnorm
+    seeds: [0, 1, 2]
+    training_runs: 6  # 2 datasets x 1 resolution x 1 norm x 3 seeds
+    status: conditional_not_yet_approved
+
+training_run_totals:
+  before_conditional_tier: 33   # A(24) + B(6) + C(3)
+  with_conditional_tier: 39     # + D(6)
+  target_range: "30-40 (per docs/compute_budget.md)"
+
+evaluation_jobs_note: >
+  Validation-Gated TTA and all other TTA conditions REUSE the checkpoints
+  above and are counted as EVALUATION jobs, not training runs. Because the
+  view-count sweep (1/2/5/10/25/50/100) and 3 aggregation methods multiply
+  out per checkpoint per condition, evaluation-job count is documented
+  separately in docs/compute_budget.md "Evaluation job accounting" — it is
+  not the same number as training_run_totals above and must not be
+  conflated with it in any report.
+
+confirmatory_promotion_rule: >
+  All cells in the training_matrix above (A, B, C, and D if the gate
+  passes) are pre-registered confirmatory cells — promotion is not
+  pilot-dependent for this corrected matrix. Any additional exploratory
+  cells run outside this matrix (e.g. a reinstated no_running_stats arm)
+  are exploratory only, per statistical_analysis_plan.md, and reported
+  separately.
