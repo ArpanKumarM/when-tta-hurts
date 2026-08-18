@@ -19,6 +19,11 @@ artifacts/*
 !artifacts/ledger_incidents.csv
 !artifacts/ledger_confirmatory.csv
 !artifacts/ledger_amendments.csv
+# The canonical Block D runtime-gate decision (INCLUDED/OMITTED) is a small,
+# permanent, machine-readable record -- tracked deliberately, unlike the
+# detailed raw benchmark timing dump it's derived from (artifacts/benchmarks/,
+# which stays ignored).
+!artifacts/block_d_gate_decision.json
 
 # Python
 __pycache__/

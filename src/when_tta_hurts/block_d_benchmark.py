@@ -12,7 +12,10 @@ disposable temporary directory only, never a real attempt directory.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +26,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from when_tta_hurts.artifacts import atomic_write_json, hash_state_dict, save_checkpoint
-from when_tta_hurts.block_d_gate import DatasetBenchmarkRecord, evaluate_block_d_gate
+from when_tta_hurts.block_d_gate import (
+    MAX_END_TO_END_MINUTES_PER_CELL,
+    MAX_PESSIMISTIC_TOTAL_HOURS,
+    MAX_TRAINING_MINUTES_PER_RUN,
+    DatasetBenchmarkRecord,
+    evaluate_block_d_gate,
+)
 from when_tta_hurts.data import get_dataset_metadata, load_pilot_split
 from when_tta_hurts.dataset_verification import (
     DEFAULT_DATA_ROOT,
@@ -44,6 +53,11 @@ MEASURED_STEPS = 30
 SAFE_MEMORY_FRACTION = 0.7
 BENCHMARK_SEED = 0  # engineering-only, not a confirmatory seed
 DEFAULT_OUTPUT_PATH = Path("artifacts/benchmarks/block_d_native_128_benchmark.json")
+# Canonical, tracked, permanent decision artifact -- the ONLY thing a future
+# Block D training entry point may trust. DEFAULT_OUTPUT_PATH above (the raw,
+# detailed timing dump) stays gitignored; this path is the narrow tracked
+# exception (see .gitignore).
+DEFAULT_DECISION_PATH = Path("artifacts/block_d_gate_decision.json")
 FROZEN_PROTOCOL_COMMIT = "ce4c962"
 SPEC_COMMIT = "3189580733581e41555b2cccda80366f58e22383"  # docs: freeze Block D benchmark operationalization
 
@@ -77,8 +91,15 @@ class IncompleteBenchmarkResultError(BlockDBenchmarkError):
 
 class BlockDDecisionError(RuntimeError):
     """Raised by the future-training-path decision loader when the
-    committed Block D gate decision is absent, OMITTED, hash-mismatched,
-    or the requested batch size differs from the selected one."""
+    committed Block D gate decision is absent, untracked, dirty, malformed,
+    OMITTED, hash-mismatched, inconsistent with the matrix/specification, or
+    the requested batch size differs from the selected one."""
+
+
+class DecisionAlreadyExistsError(BlockDBenchmarkError):
+    """Raised by write_block_d_gate_decision when a decision artifact
+    already exists at the target path -- the gate decision is permanent
+    once written; overwriting it silently is never allowed."""
 
 
 class DataLoaderFactory(Protocol):
@@ -536,11 +557,17 @@ def _measure_persistence_overhead(model: nn.Module, benchmark_dir: Path, n_class
     return time.perf_counter() - t0
 
 
+def _device_name(entry: dict[str, Any]) -> str:
+    raw_device = entry["device"]
+    return raw_device.split(":")[0] if ":" in raw_device else raw_device
+
+
 def run_block_d_benchmark(
     device_resolver=lambda: select_device("mps"),
     loader_factory: DataLoaderFactory = default_block_d_loader_factory,
     root: str | Path = DEFAULT_DATA_ROOT,
     output_path: str | Path = DEFAULT_OUTPUT_PATH,
+    decision_path: str | Path = DEFAULT_DECISION_PATH,
     matrix_path: str = "configs/experiment_matrix.yaml",
     frozen_pessimistic_abc_hours: float = 3.92,
 ) -> dict[str, Any]:
@@ -551,6 +578,11 @@ def run_block_d_benchmark(
     confirmatory attempt, writes a confirmatory-ledger row, or creates
     artifacts/confirmatory/D -- temporary persistence timing uses only a
     disposable directory under output_path's parent.
+
+    Writes TWO artifacts: the detailed raw output at `output_path`
+    (gitignored -- large, full of per-step timing), and the canonical,
+    tracked, permanent decision at `decision_path` (see
+    write_block_d_gate_decision -- refuses to overwrite an existing one).
     """
     from when_tta_hurts.matrix import parse_and_validate_matrix
 
@@ -569,10 +601,6 @@ def run_block_d_benchmark(
         per_dataset[dataset] = _benchmark_one_dataset(
             dataset, device_resolver, loader_factory, root, benchmark_root
         )
-
-    def _device_name(entry: dict[str, Any]) -> str:
-        raw_device = entry["device"]
-        return raw_device.split(":")[0] if ":" in raw_device else raw_device
 
     records = {
         ds: DatasetBenchmarkRecord(
@@ -623,7 +651,40 @@ def run_block_d_benchmark(
 
     _validate_output_schema(output)
     atomic_write_json(output, output_path)
+    raw_output_sha256 = _sha256_file(Path(output_path))
+
+    decision = build_gate_decision(output, raw_output_sha256=raw_output_sha256, raw_output_path=output_path)
+    write_block_d_gate_decision(decision, decision_path=decision_path)
+
+    output["decision"] = decision
+    output["decision_path"] = str(decision_path)
     return output
+
+
+_FORBIDDEN_SCIENTIFIC_TERMS = (
+    "accuracy",
+    "f1",
+    "nll",
+    "ece",
+    "brier",
+    "tta_delta",
+    "prediction",
+    "test_metric",
+)
+
+
+def _find_forbidden_scientific_term(serializable: Any) -> str | None:
+    """Word-boundary search for forbidden scientific-metric terms.
+    Deliberately NOT a raw substring search: hex checksums/commit hashes/
+    SHA-256 digests can contain incidental substrings like 'f1' or 'ece'
+    purely by chance, which a raw substring check would misfire on. A
+    word-boundary match still catches any real field/value genuinely named
+    or containing one of these terms as a standalone token."""
+    serialized = json.dumps(serializable).lower()
+    for term in _FORBIDDEN_SCIENTIFIC_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", serialized):
+            return term
+    return None
 
 
 def _validate_output_schema(output: dict[str, Any]) -> None:
@@ -641,53 +702,226 @@ def _validate_output_schema(output: dict[str, Any]) -> None:
     missing = required_top - set(output.keys())
     if missing:
         raise IncompleteBenchmarkResultError(f"Benchmark output missing required top-level fields: {missing}")
-    forbidden_terms = (
-        "accuracy",
-        "f1",
-        "nll",
-        "ece",
-        "brier",
-        "tta_delta",
-        "prediction",
-        "test_metric",
-    )
-    serialized = json.dumps(output).lower()
-    for term in forbidden_terms:
-        if term in serialized:
-            raise IncompleteBenchmarkResultError(
-                f"Benchmark output contains forbidden scientific-metric term '{term}' -- "
-                f"this schema must never carry accuracy/prediction/TTA fields."
-            )
+    term = _find_forbidden_scientific_term(output)
+    if term is not None:
+        raise IncompleteBenchmarkResultError(
+            f"Benchmark output contains forbidden scientific-metric term '{term}' -- "
+            f"this schema must never carry accuracy/prediction/TTA fields."
+        )
 
 
 def _git_commit_hash() -> str:
-    import subprocess
-
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except Exception:
         return "unknown"
 
 
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+_DECISION_REQUIRED_FIELDS = {
+    "schema_version",
+    "final_decision",
+    "activated",
+    "source_commit",
+    "protocol_commit",
+    "spec_commit",
+    "matrix_hash",
+    "raw_output_sha256",
+    "raw_output_path",
+    "per_dataset",
+    "gate_condition_booleans",
+    "gate_conditions",
+    "per_dataset_pass",
+    "frozen_pessimistic_abc_hours",
+    "block_d_contribution_seconds",
+    "binding_total_hours",
+    "no_scientific_metric_informed_decision",
+    "scientific_metric_confirmation",
+}
+
+
+def build_gate_decision(
+    output: dict[str, Any], raw_output_sha256: str, raw_output_path: str | Path
+) -> dict[str, Any]:
+    """Build the CANONICAL decision from a completed raw benchmark `output`
+    (as produced by run_block_d_benchmark before writing). Uses runtime/
+    memory/checksum evidence only -- no accuracy/prediction/test-metric
+    field is ever read or included."""
+    per_dataset = {
+        ds: {
+            "artifact_path": output["per_dataset"][ds]["artifact_path"],
+            "checksum_expected": output["per_dataset"][ds]["expected_checksum_md5"],
+            "checksum_actual": output["per_dataset"][ds]["actual_checksum_md5"],
+            "resized": output["per_dataset"][ds]["resized"],
+            "selected_batch_size": output["per_dataset"][ds]["selected_batch_size"],
+            "projected_training_minutes_per_run": (
+                output["per_dataset"][ds]["projected_training_seconds"] / 60
+            ),
+            "projected_end_to_end_minutes_per_cell": (
+                output["per_dataset"][ds]["projected_end_to_end_seconds"] / 60
+            ),
+        }
+        for ds in BLOCK_D_DATASETS
+    }
+
+    gate_condition_booleans = {
+        ds: {
+            "native_128px": not output["per_dataset"][ds]["resized"],
+            "checksum_match": (
+                output["per_dataset"][ds]["expected_checksum_md5"]
+                == output["per_dataset"][ds]["actual_checksum_md5"]
+            ),
+            "device_mps": _device_name(output["per_dataset"][ds]) == "mps",
+            "no_oom": not output["per_dataset"][ds]["oom_occurred"],
+            "finite_loss": not output["per_dataset"][ds]["non_finite_loss_occurred"],
+            "training_within_90_minutes": (
+                output["per_dataset"][ds]["projected_training_seconds"] / 60 <= MAX_TRAINING_MINUTES_PER_RUN
+            ),
+            "end_to_end_within_120_minutes": (
+                output["per_dataset"][ds]["projected_end_to_end_seconds"] / 60
+                <= MAX_END_TO_END_MINUTES_PER_CELL
+            ),
+        }
+        for ds in BLOCK_D_DATASETS
+    }
+    gate_condition_booleans["binding_total_within_24_hours"] = (
+        output["binding_total_hours"] < MAX_PESSIMISTIC_TOTAL_HOURS
+    )
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "final_decision": output["final_decision"],
+        "activated": output["activated"],
+        "source_commit": output["source_commit"],
+        "protocol_commit": output["protocol_commit"],
+        "spec_commit": output["spec_commit"],
+        "matrix_hash": output["matrix_hash"],
+        "raw_output_sha256": raw_output_sha256,
+        "raw_output_path": str(raw_output_path),
+        "per_dataset": per_dataset,
+        "gate_condition_booleans": gate_condition_booleans,
+        "gate_conditions": output["gate_conditions"],
+        "per_dataset_pass": output["per_dataset_pass"],
+        "frozen_pessimistic_abc_hours": output["frozen_pessimistic_abc_hours"],
+        "block_d_contribution_seconds": output["block_d_contribution_seconds"],
+        "binding_total_hours": output["binding_total_hours"],
+        "no_scientific_metric_informed_decision": True,
+        "scientific_metric_confirmation": (
+            "Decision derived solely from runtime, memory-fraction, checksum, and loss-finiteness "
+            "evidence; the benchmark record schema carries no performance-quality field of any kind, "
+            "and no held-out split was read at any point in this pipeline."
+        ),
+    }
+
+
+def _validate_decision_schema(decision: dict[str, Any]) -> None:
+    missing = _DECISION_REQUIRED_FIELDS - set(decision.keys())
+    if missing:
+        raise IncompleteBenchmarkResultError(f"Block D gate decision missing required fields: {missing}")
+    term = _find_forbidden_scientific_term(decision)
+    if term is not None:
+        raise IncompleteBenchmarkResultError(
+            f"Block D gate decision contains forbidden scientific-metric term '{term}'."
+        )
+
+
+def write_block_d_gate_decision(
+    decision: dict[str, Any], decision_path: str | Path = DEFAULT_DECISION_PATH
+) -> None:
+    """Write the CANONICAL, tracked, PERMANENT Block D gate decision.
+    Refuses to overwrite an existing decision at `decision_path` -- once
+    written, a new decision requires an explicit, separately-reviewed
+    removal of the old one, never a silent rerun."""
+    decision_path = Path(decision_path)
+    if decision_path.exists():
+        raise DecisionAlreadyExistsError(
+            f"{decision_path} already exists -- the Block D gate decision is permanent once written. "
+            f"Refusing to overwrite it."
+        )
+    _validate_decision_schema(decision)
+    atomic_write_json(decision, decision_path)
+
+
+def _default_git_tracked_and_clean(path: Path) -> bool:
+    """True iff `path` is tracked by git and has no uncommitted diff
+    against HEAD (a clean working tree at exactly that path)."""
+    try:
+        subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    status = subprocess.run(
+        ["git", "status", "--porcelain", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return status.stdout.strip() == ""
+
+
 def load_and_verify_block_d_decision(
     decision_path: str | Path,
     expected_matrix_hash: str,
     expected_protocol_commit: str = FROZEN_PROTOCOL_COMMIT,
+    expected_spec_commit: str = SPEC_COMMIT,
     requested_batch_size: int | None = None,
     dataset: str | None = None,
+    require_git_tracked: bool = True,
+    git_tracked_and_clean=_default_git_tracked_and_clean,
+    raw_output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """FUTURE Block D training path consumption point -- not wired into
     any training entry point in this task (Block D training remains
     entirely unlocked/unreachable elsewhere in the codebase). Hard-fails
-    if: the decision file is absent, the decision is OMITTED, the
-    matrix/protocol hashes don't match, or a requested batch size differs
-    from the recorded selected batch for `dataset`.
+    if: the decision file is absent, untracked/dirty (unless explicitly
+    disabled for testing), malformed, says anything but 'INCLUDED', the
+    matrix/protocol/spec hashes don't match, its raw-output hash doesn't
+    match the (optionally supplied) raw file, or a requested batch size
+    differs from the recorded selected batch for `dataset`.
     """
     path = Path(decision_path)
     if not path.exists():
         raise BlockDDecisionError(f"No Block D gate decision found at {path} -- Block D training is locked.")
-    decision = json.loads(path.read_text())
+    if require_git_tracked and not git_tracked_and_clean(path):
+        raise BlockDDecisionError(
+            f"{path} is not a clean, git-tracked artifact -- refusing to trust an "
+            f"untracked or locally-modified decision."
+        )
 
+    try:
+        decision = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise BlockDDecisionError(f"{path} is not valid JSON -- malformed decision artifact.") from e
+
+    try:
+        _validate_decision_schema(decision)
+    except IncompleteBenchmarkResultError as e:
+        raise BlockDDecisionError(f"{path} is malformed: {e}") from e
+
+    if raw_output_path is not None:
+        raw_path = Path(raw_output_path)
+        if not raw_path.exists() or _sha256_file(raw_path) != decision.get("raw_output_sha256"):
+            raise BlockDDecisionError(
+                "Raw benchmark output is missing or its SHA-256 does not match the decision's "
+                "recorded raw_output_sha256 -- refusing to trust a decision without verifiable evidence."
+            )
+
+    if decision.get("spec_commit") != expected_spec_commit:
+        raise BlockDDecisionError(
+            f"Block D gate decision spec_commit {decision.get('spec_commit')} does not match "
+            f"expected {expected_spec_commit} -- refusing to trust a stale decision."
+        )
     if decision.get("final_decision") != "INCLUDED":
         raise BlockDDecisionError(
             f"Block D gate decision is '{decision.get('final_decision')}', not 'INCLUDED' -- "

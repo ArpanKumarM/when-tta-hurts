@@ -476,10 +476,10 @@ def _stub_full_pipeline(monkeypatch, tmp_path, *, pathmnist_ok=True, bloodmnist_
 
 def test_both_datasets_benchmarked_for_all_or_nothing_decision(monkeypatch, tmp_path):
     _stub_full_pipeline(monkeypatch, tmp_path)
-    output_path = tmp_path / "decision.json"
     result = bdb.run_block_d_benchmark(
         device_resolver=lambda: torch.device("cpu"),
-        output_path=output_path,
+        output_path=tmp_path / "raw.json",
+        decision_path=tmp_path / "gate_decision.json",
     )
     assert set(result["per_dataset"].keys()) == {"pathmnist", "bloodmnist"}
     assert result["final_decision"] in ("INCLUDED", "OMITTED")
@@ -487,10 +487,10 @@ def test_both_datasets_benchmarked_for_all_or_nothing_decision(monkeypatch, tmp_
 
 def test_one_dataset_failing_checksum_omits_entire_block(monkeypatch, tmp_path):
     _stub_full_pipeline(monkeypatch, tmp_path, pathmnist_ok=False)
-    output_path = tmp_path / "decision.json"
     result = bdb.run_block_d_benchmark(
         device_resolver=lambda: torch.device("cpu"),
-        output_path=output_path,
+        output_path=tmp_path / "raw.json",
+        decision_path=tmp_path / "gate_decision.json",
     )
     assert result["final_decision"] == "OMITTED"
     assert result["per_dataset_pass"]["pathmnist"] is False
@@ -499,10 +499,10 @@ def test_one_dataset_failing_checksum_omits_entire_block(monkeypatch, tmp_path):
 
 def test_result_schema_contains_no_scientific_metric_fields(monkeypatch, tmp_path):
     _stub_full_pipeline(monkeypatch, tmp_path)
-    output_path = tmp_path / "decision.json"
     result = bdb.run_block_d_benchmark(
         device_resolver=lambda: torch.device("cpu"),
-        output_path=output_path,
+        output_path=tmp_path / "raw.json",
+        decision_path=tmp_path / "gate_decision.json",
     )
     serialized = json.dumps(result).lower()
     for term in ("accuracy", "f1", "nll", "ece", "brier", "tta_delta", "test_metric"):
@@ -532,28 +532,41 @@ def test_validate_output_schema_rejects_missing_field():
 
 def test_atomic_output_write_produces_valid_json_no_tmp_leftover(monkeypatch, tmp_path):
     _stub_full_pipeline(monkeypatch, tmp_path)
-    output_path = tmp_path / "sub" / "decision.json"
-    bdb.run_block_d_benchmark(device_resolver=lambda: torch.device("cpu"), output_path=output_path)
+    output_path = tmp_path / "sub" / "raw.json"
+    decision_path = tmp_path / "gate_decision.json"
+    bdb.run_block_d_benchmark(
+        device_resolver=lambda: torch.device("cpu"), output_path=output_path, decision_path=decision_path
+    )
     assert output_path.exists()
     json.loads(output_path.read_text())
     assert not output_path.with_suffix(output_path.suffix + ".tmp").exists()
+    assert decision_path.exists()
+    json.loads(decision_path.read_text())
+    assert not decision_path.with_suffix(decision_path.suffix + ".tmp").exists()
 
 
 def test_no_ledger_or_confirmatory_artifact_writes(monkeypatch, tmp_path):
     _stub_full_pipeline(monkeypatch, tmp_path)
-    output_path = tmp_path / "decision.json"
-    bdb.run_block_d_benchmark(device_resolver=lambda: torch.device("cpu"), output_path=output_path)
+    bdb.run_block_d_benchmark(
+        device_resolver=lambda: torch.device("cpu"),
+        output_path=tmp_path / "raw.json",
+        decision_path=tmp_path / "gate_decision.json",
+    )
     assert not (tmp_path / "confirmatory").exists()
     assert not (tmp_path / "ledger.csv").exists()
     assert not (tmp_path / "ledger_confirmatory.csv").exists()
 
 
-def test_run_block_d_benchmark_fails_closed_on_device_unavailable():
+def test_run_block_d_benchmark_fails_closed_on_device_unavailable(tmp_path):
     def raising_resolver():
         raise DeviceUnavailableError("mps not available")
 
     with pytest.raises(DeviceUnavailableError):
-        bdb.run_block_d_benchmark(device_resolver=raising_resolver)
+        bdb.run_block_d_benchmark(
+            device_resolver=raising_resolver,
+            output_path=tmp_path / "raw.json",
+            decision_path=tmp_path / "gate_decision.json",
+        )
 
 
 def test_all_batch_candidates_failed_prevents_any_decision_output(monkeypatch, tmp_path):
@@ -567,10 +580,14 @@ def test_all_batch_candidates_failed_prevents_any_decision_output(monkeypatch, t
         raise bdb.AllBatchCandidatesFailedError(f"{dataset}: no safe candidate")
 
     monkeypatch.setattr(bdb, "_benchmark_one_dataset", fake_benchmark_one_dataset)
-    output_path = tmp_path / "decision.json"
+    output_path = tmp_path / "raw.json"
+    decision_path = tmp_path / "gate_decision.json"
     with pytest.raises(bdb.AllBatchCandidatesFailedError):
-        bdb.run_block_d_benchmark(device_resolver=lambda: torch.device("cpu"), output_path=output_path)
+        bdb.run_block_d_benchmark(
+            device_resolver=lambda: torch.device("cpu"), output_path=output_path, decision_path=decision_path
+        )
     assert not output_path.exists()
+    assert not decision_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -625,10 +642,27 @@ def test_plan_mode_reports_frozen_formulas():
 
 def _write_decision(tmp_path, **overrides):
     decision = {
+        "schema_version": "1.0",
         "final_decision": "INCLUDED",
-        "matrix_hash": "matrixhash123",
+        "activated": True,
+        "source_commit": "abc123",
         "protocol_commit": bdb.FROZEN_PROTOCOL_COMMIT,
-        "per_dataset": {"pathmnist": {"selected_batch_size": 128}},
+        "spec_commit": bdb.SPEC_COMMIT,
+        "matrix_hash": "matrixhash123",
+        "raw_output_sha256": "deadbeef",
+        "raw_output_path": "artifacts/benchmarks/block_d_native_128_benchmark.json",
+        "per_dataset": {
+            "pathmnist": {"selected_batch_size": 128},
+            "bloodmnist": {"selected_batch_size": 64},
+        },
+        "gate_condition_booleans": {},
+        "gate_conditions": [],
+        "per_dataset_pass": {"pathmnist": True, "bloodmnist": True},
+        "frozen_pessimistic_abc_hours": 3.92,
+        "block_d_contribution_seconds": 100.0,
+        "binding_total_hours": 4.0,
+        "no_scientific_metric_informed_decision": True,
+        "scientific_metric_confirmation": "runtime/memory/checksum evidence only",
     }
     decision.update(overrides)
     path = tmp_path / "decision.json"
@@ -638,26 +672,46 @@ def _write_decision(tmp_path, **overrides):
 
 def test_missing_decision_file_blocks_training(tmp_path):
     with pytest.raises(bdb.BlockDDecisionError):
-        bdb.load_and_verify_block_d_decision(tmp_path / "nope.json", expected_matrix_hash="x")
+        bdb.load_and_verify_block_d_decision(
+            tmp_path / "nope.json", expected_matrix_hash="x", require_git_tracked=False
+        )
 
 
 def test_omitted_decision_blocks_training(tmp_path):
     path = _write_decision(tmp_path, final_decision="OMITTED")
     with pytest.raises(bdb.BlockDDecisionError):
-        bdb.load_and_verify_block_d_decision(path, expected_matrix_hash="matrixhash123")
+        bdb.load_and_verify_block_d_decision(
+            path, expected_matrix_hash="matrixhash123", require_git_tracked=False
+        )
 
 
 def test_matrix_hash_mismatch_blocks_training(tmp_path):
     path = _write_decision(tmp_path)
     with pytest.raises(bdb.BlockDDecisionError):
-        bdb.load_and_verify_block_d_decision(path, expected_matrix_hash="different_hash")
+        bdb.load_and_verify_block_d_decision(
+            path, expected_matrix_hash="different_hash", require_git_tracked=False
+        )
 
 
 def test_protocol_commit_mismatch_blocks_training(tmp_path):
     path = _write_decision(tmp_path)
     with pytest.raises(bdb.BlockDDecisionError):
         bdb.load_and_verify_block_d_decision(
-            path, expected_matrix_hash="matrixhash123", expected_protocol_commit="different_commit"
+            path,
+            expected_matrix_hash="matrixhash123",
+            expected_protocol_commit="different_commit",
+            require_git_tracked=False,
+        )
+
+
+def test_spec_commit_mismatch_blocks_training(tmp_path):
+    path = _write_decision(tmp_path)
+    with pytest.raises(bdb.BlockDDecisionError):
+        bdb.load_and_verify_block_d_decision(
+            path,
+            expected_matrix_hash="matrixhash123",
+            expected_spec_commit="different_spec_commit",
+            require_git_tracked=False,
         )
 
 
@@ -665,16 +719,141 @@ def test_batch_size_mismatch_blocks_training(tmp_path):
     path = _write_decision(tmp_path)
     with pytest.raises(bdb.BlockDDecisionError):
         bdb.load_and_verify_block_d_decision(
-            path, expected_matrix_hash="matrixhash123", dataset="pathmnist", requested_batch_size=64
+            path,
+            expected_matrix_hash="matrixhash123",
+            dataset="pathmnist",
+            requested_batch_size=64,
+            require_git_tracked=False,
         )
 
 
 def test_matching_included_decision_loads_successfully(tmp_path):
     path = _write_decision(tmp_path)
     decision = bdb.load_and_verify_block_d_decision(
-        path, expected_matrix_hash="matrixhash123", dataset="pathmnist", requested_batch_size=128
+        path,
+        expected_matrix_hash="matrixhash123",
+        dataset="pathmnist",
+        requested_batch_size=128,
+        require_git_tracked=False,
     )
     assert decision["final_decision"] == "INCLUDED"
+
+
+def test_malformed_json_decision_blocks_training(tmp_path):
+    path = tmp_path / "decision.json"
+    path.write_text("{not valid json")
+    with pytest.raises(bdb.BlockDDecisionError):
+        bdb.load_and_verify_block_d_decision(
+            path, expected_matrix_hash="matrixhash123", require_git_tracked=False
+        )
+
+
+def test_missing_required_field_decision_blocks_training(tmp_path):
+    path = _write_decision(tmp_path)
+    decision = json.loads(path.read_text())
+    del decision["raw_output_sha256"]
+    path.write_text(json.dumps(decision))
+    with pytest.raises(bdb.BlockDDecisionError):
+        bdb.load_and_verify_block_d_decision(
+            path, expected_matrix_hash="matrixhash123", require_git_tracked=False
+        )
+
+
+def test_untracked_decision_blocked_when_git_tracking_required(tmp_path):
+    path = _write_decision(tmp_path)
+    with pytest.raises(bdb.BlockDDecisionError):
+        bdb.load_and_verify_block_d_decision(
+            path, expected_matrix_hash="matrixhash123", require_git_tracked=True
+        )
+
+
+def test_git_tracked_check_can_be_injected(tmp_path):
+    path = _write_decision(tmp_path)
+    decision = bdb.load_and_verify_block_d_decision(
+        path,
+        expected_matrix_hash="matrixhash123",
+        require_git_tracked=True,
+        git_tracked_and_clean=lambda p: True,
+    )
+    assert decision["final_decision"] == "INCLUDED"
+
+
+def test_raw_output_hash_mismatch_blocks_training(tmp_path):
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text('{"real": "content"}')
+    path = _write_decision(tmp_path, raw_output_sha256="wrong_hash")
+    with pytest.raises(bdb.BlockDDecisionError):
+        bdb.load_and_verify_block_d_decision(
+            path,
+            expected_matrix_hash="matrixhash123",
+            require_git_tracked=False,
+            raw_output_path=raw_path,
+        )
+
+
+def test_raw_output_hash_match_succeeds(tmp_path):
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text('{"real": "content"}')
+    actual_hash = bdb._sha256_file(raw_path)
+    path = _write_decision(tmp_path, raw_output_sha256=actual_hash)
+    decision = bdb.load_and_verify_block_d_decision(
+        path,
+        expected_matrix_hash="matrixhash123",
+        require_git_tracked=False,
+        raw_output_path=raw_path,
+    )
+    assert decision["final_decision"] == "INCLUDED"
+
+
+def test_write_block_d_gate_decision_rejects_overwrite(tmp_path):
+    decision_path = tmp_path / "gate_decision.json"
+    decision = json.loads(_write_decision(tmp_path).read_text())
+    bdb.write_block_d_gate_decision(decision, decision_path=decision_path)
+    with pytest.raises(bdb.DecisionAlreadyExistsError):
+        bdb.write_block_d_gate_decision(decision, decision_path=decision_path)
+
+
+def test_write_block_d_gate_decision_writes_atomically(tmp_path):
+    decision_path = tmp_path / "gate_decision.json"
+    decision = json.loads(_write_decision(tmp_path).read_text())
+    bdb.write_block_d_gate_decision(decision, decision_path=decision_path)
+    assert decision_path.exists()
+    json.loads(decision_path.read_text())
+    assert not decision_path.with_suffix(decision_path.suffix + ".tmp").exists()
+
+
+def test_build_gate_decision_contains_all_required_fields(monkeypatch, tmp_path):
+    _stub_full_pipeline(monkeypatch, tmp_path)
+    result = bdb.run_block_d_benchmark(
+        device_resolver=lambda: torch.device("cpu"),
+        output_path=tmp_path / "raw.json",
+        decision_path=tmp_path / "gate_decision.json",
+    )
+    decision = result["decision"]
+    assert bdb._DECISION_REQUIRED_FIELDS <= set(decision.keys())
+    assert decision["raw_output_sha256"] == bdb._sha256_file(tmp_path / "raw.json")
+
+
+def test_decision_gate_condition_booleans_present_per_dataset(monkeypatch, tmp_path):
+    _stub_full_pipeline(monkeypatch, tmp_path)
+    result = bdb.run_block_d_benchmark(
+        device_resolver=lambda: torch.device("cpu"),
+        output_path=tmp_path / "raw.json",
+        decision_path=tmp_path / "gate_decision.json",
+    )
+    booleans = result["decision"]["gate_condition_booleans"]
+    for ds in ("pathmnist", "bloodmnist"):
+        for key in (
+            "native_128px",
+            "checksum_match",
+            "device_mps",
+            "no_oom",
+            "finite_loss",
+            "training_within_90_minutes",
+            "end_to_end_within_120_minutes",
+        ):
+            assert key in booleans[ds]
+    assert "binding_total_within_24_hours" in booleans
 
 
 def test_decision_loader_not_wired_into_any_training_entry_point():
