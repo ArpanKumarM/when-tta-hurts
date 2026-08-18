@@ -1,6 +1,9 @@
 # Statistical Analysis Plan
 
-**Status: draft, Phase 0.**
+**Status: baseline matrix (blocks A/B/C) APPROVED as of Phase 2B.1 — see
+`docs/phase2b_protocol.md`. The confirmatory/exploratory classification
+below is consistent with, and referenced by, that document's secondary-
+analysis freeze (sec.3). Validation-Gated TTA remains draft/not approved.**
 
 ## Design
 
@@ -70,8 +73,10 @@ selective reporting of only the cells that "worked."
   evaluated on a fresh test pass (or explicitly flagged as no longer a
   held-out evaluation), never silently substituted into the confirmatory
   results.
-- Every test-set evaluation is logged in `results/ledger.csv` (append-only)
-  regardless of outcome, so the number of test-set "looks" is auditable.
+- Every test-set evaluation is logged in `artifacts/ledger.csv` (corrected
+  path — matches the actual implementation, `src/when_tta_hurts/ledger.py`;
+  append-only) regardless of outcome, so the number of test-set "looks" is
+  auditable.
 
 ## Reporting requirements
 

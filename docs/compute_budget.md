@@ -1,13 +1,27 @@
 # Compute Budget
 
-**Status: draft, Phase 0. Runtime numbers are unmeasured placeholders — no
-runs have been executed on the target machine yet. Matrix corrected against
-verified source-paper facts — see `docs/literature_review.md` and
+**Status: baseline matrix (blocks A/B/C) APPROVED as of Phase 2B.1 — see
+`docs/phase2b_protocol.md`. 28px/64px runtime numbers are no longer
+placeholders (see "Actual hardware" and `docs/pilot_audit.md`'s corrected
+canonical benchmark); 128px numbers remain unmeasured pending Block D's own
+gate (`docs/phase2b_protocol.md` sec.6). Matrix corrected against verified
+source-paper facts — see `docs/literature_review.md` and
 `configs/experiment_matrix.yaml`.**
 
 ## Hardware
 
-- Apple Silicon M4, 16 GB unified memory.
+**Primary hardware (corrected — see "Actual hardware" below for the full
+disclosure): Apple M3 Pro, 18 GB unified memory.** The original Phase 0
+hard constraint ("Apple Silicon M4, 16 GB unified memory") is preserved
+below as a documented historical planning assumption, not deleted — it was
+superseded once the actual machine was measured in Phase 1, and the M3 Pro
+has been the real target for all Phase 1/2A work and all Phase 2B planning
+since.
+
+- **Actual/primary: Apple M3 Pro, 18 GB unified memory** (measured via
+  `sysctl`/`sw_vers`; see "Actual hardware" section below).
+- *Historical planning assumption (Phase 0, superseded): Apple Silicon M4,
+  16 GB unified memory.*
 - PyTorch with the MPS backend. No NVIDIA GPU, no CUDA.
 - No cloud training in this phase; not approved for use without a separate
   request.
@@ -128,18 +142,35 @@ disk space before any real caching begins in Phase 2+.
 - **224×224 is out of scope** for this initial study regardless of measured
   runtime, per the hard constraint on scope.
 
-## Kill criteria (to be filled with measured numbers in Phase 1)
+## Kill criteria — CORRECTED, now frozen for 128px (blocks A/B/C need no kill criterion: measured, see below)
 
-- Max wall-clock minutes per individual training run: **TBD**, to be set
-  after the smoke test and pilot measurement, then written here and into
-  `configs/experiment_matrix.yaml`.
-- Max memory: 16 GB hard ceiling (physical machine limit); a practical
-  working ceiling below that (e.g. leaving headroom for the OS) will be set
-  after Phase 1 measurement.
+**The "TBD" that previously appeared here was never filled in during Phase
+1/2A, even after real timing data existed — this was a documentation gap
+identified and closed in the Phase 2B preflight audit.** It is now
+resolved as follows:
+
+- **28px/64px (blocks A/B/C):** no separate kill criterion is needed —
+  these are now **measured**, not estimated: `docs/pilot_audit.md`'s
+  corrected canonical benchmark shows ~3.3min/run (28px) and ~13.9-15.0min/run
+  (64px) at 30 epochs, batch 256, well within any reasonable ceiling.
+- **128px (block D):** the numeric trigger is now frozen in
+  `docs/phase2b_protocol.md` sec.6 — **≤90 minutes per 128px training run,
+  ≤120 minutes per 128px cell end-to-end, pessimistic A+B+C+D total <24
+  hours** — checked before any 128px training occurs, using a native
+  (not resized-proxy) 128px benchmark.
+- Max memory: 18 GB hard ceiling (actual machine, corrected from the
+  16 GB historical planning assumption — see "Hardware" above); a
+  practical working ceiling below that (leaving headroom for the OS) is
+  informed by the measured memory fractions in `docs/pilot_audit.md`
+  (all confirmed ≤10.4% of `recommended_max_memory` at 28px/64px,
+  batch 256).
 - If MPS operations are unsupported or numerically unstable for a given op
-  (a known occasional issue with newer PyTorch ops on MPS), fall back to CPU
-  for the affected operation only, and document which ops required the
-  fallback and any observed runtime cost.
+  (a known occasional issue with newer PyTorch ops on MPS — and confirmed
+  in practice for kornia's `RandomResizedCrop`/`RandomGaussianBlur`, whose
+  MPS performance pathology was found and fixed during the Phase 2A audit,
+  see `docs/pilot_audit.md`), fall back to CPU for the affected operation
+  only, and document which ops required the fallback and any observed
+  runtime cost — do not fall back silently.
 
 ## Fallback scope if the target budget can't be met
 
@@ -161,9 +192,11 @@ Any of these cuts must be applied to the matrix in
 
 The corrected matrix (33 runs before the conditional tier, 39 with it) fits
 within the 30-40 run target as scoped. This resolves the "Open problem"
-flagged in the prior version of this document. Remaining unknowns are
-runtime/memory measurements themselves, which require Phase 1 (not yet
-approved) to obtain.
+flagged in the prior version of this document. 28px/64px runtime/memory are
+now **measured** (Phase 1/2A complete — see "Actual hardware" below and
+`docs/pilot_audit.md`); 128px remains unmeasured pending Block D's own gate
+(`docs/phase2b_protocol.md` sec.6), which has not yet been evaluated (no
+128px artifact has been downloaded for any dataset).
 
 ## Actual hardware (measured in Phase 1) — deviation from the stated constraint
 

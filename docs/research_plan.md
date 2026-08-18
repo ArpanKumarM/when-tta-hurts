@@ -1,17 +1,38 @@
 # Research Plan
 
-**Status: Phase 0 — planning / pre-registration. No experiments have been run.**
+**Status: Phase 2B.1 — baseline confirmatory protocol preregistered and
+frozen (`docs/phase2b_protocol.md`). No experiments have been run: no
+Phase 2B runner exists yet (Phase 2B.2, not started), no dataset has been
+downloaded for the confirmatory matrix, no test-split access has occurred.
+Phases 0/1/2A are complete — see below.**
 
 ## Phase definitions
 
-- **Phase 0 (current):** scientific plan, literature review, repo skeleton,
-  claims table, statistical plan. No training, no dataset downloads, no
-  results, no commits.
-- **Phase 1 (future, requires approval):** environment setup, dataset
-  download + checksum, smoke tests, one-seed pilots.
-- **Phase 2 (future, requires approval):** confirmatory 3-seed runs per the
-  frozen `configs/experiment_matrix.yaml`, test-set evaluation under the
-  test firewall.
+- **Phase 0 (complete):** scientific plan, literature review, repo
+  skeleton, claims table, statistical plan. Frozen in commit `a22db01`.
+- **Phase 1 (complete):** environment setup, dataset download + checksum,
+  smoke tests. Committed in `d910121`.
+- **Phase 2A (complete):** one-seed exploratory validation pilot
+  (PathMNIST/28px/SmallCNN/BatchNorm, seed 314159, permanently excluded
+  from confirmatory results) plus a full scientific audit of that pilot.
+  Committed in `9767c80` (preregistration) and `f30c0c6` (audited
+  implementation + results). See `docs/pilot_protocol.md` and
+  `docs/pilot_audit.md`.
+- **Phase 2B.1 (current, complete):** baseline confirmatory protocol
+  (blocks A/B/C of `configs/experiment_matrix.yaml`) frozen and approved —
+  see `docs/phase2b_protocol.md`. Block D remains approved-but-conditional.
+  Validation-Gated TTA (H4) remains draft/not approved.
+- **Phase 2B.2 (future, requires approval):** implement the confirmatory
+  matrix runner per `docs/phase2b_protocol.md`'s reproducibility
+  requirements. No runner exists yet.
+- **Phase 2B.3 (future, requires approval):** execute blocks A/B/C (and D
+  if its gate passes) — training + validation-based evaluation only, per
+  the strengthened test firewall (`docs/phase2b_protocol.md` sec.5). No
+  test-split access in this phase.
+- **Phase 2B.4 (future, requires approval):** develop and freeze
+  Validation-Gated TTA using validation data only.
+- **Phase 2B.5 (future, requires approval):** unlock the official test
+  split once; run the single frozen final evaluation for every condition.
 - **Phase 3 (future, requires approval):** analysis, figures, draft report.
 
 Moving between phases requires explicit user approval — see `CLAUDE.md`.

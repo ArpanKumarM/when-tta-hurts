@@ -1,5 +1,10 @@
 # Phase 0 experiment matrix — CORRECTED per verified source-paper facts.
-# NOT APPROVED, NOT EXECUTED. No run described here has been launched.
+# Phase 2B.1: baseline (blocks A/B/C) protocol APPROVED and FROZEN --
+# see docs/phase2b_protocol.md for the full frozen training/evaluation
+# spec, Block D's numeric trigger, and the strengthened test firewall.
+# NOT YET EXECUTED -- no runner is implemented (Phase 2B.2, not started),
+# no run described here has been launched, no dataset downloaded for this
+# matrix, no test-split access has occurred.
 #
 # Correction history: this matrix was revised after reading the full text
 # (arxiv.org/html/2604.09697v1, both appendices) and the MedMNIST+
@@ -8,24 +13,47 @@
 # behind every number below.
 #
 # Status values:
-#   draft     — proposed, not reviewed
-#   approved  — signed off by user, may be executed in Phase 1+
-#   executed  — has a corresponding row in results/ledger.csv
-status: draft
+#   draft               — proposed, not reviewed
+#   approved            — signed off by user, may be executed once a runner exists
+#   approved_conditional — signed off, but execution is gated on a numeric trigger (see block D)
+#   executed            — has a corresponding row in artifacts/ledger.csv
+#
+# Per-block status (frozen in docs/phase2b_protocol.md Part 8):
+#   A_core_normalization_resolution: approved
+#   B_policy_matching:                approved
+#   C_positive_control_reproduction:  approved
+#   D_conditional_128px:              approved_conditional (see docs/phase2b_protocol.md sec.6)
+#   Validation-Gated TTA (H4, not a block above): draft — NOT approved, algorithm not frozen
+status: approved  # baseline matrix (blocks A/B/C); block D remains approved_conditional -- see per-block statuses above
 
 hardware:
-  device: apple_silicon_m4
-  memory_gb: 16
+  # Documented planning assumption from Phase 0 -- preserved for history,
+  # NOT deleted, per docs/phase2b_protocol.md Part 8. The actual machine
+  # used for all Phase 1/2A work, and the primary target for Phase 2B, is
+  # the Apple M3 Pro (see docs/compute_budget.md "Actual hardware" section
+  # for the full disclosure of this deviation).
+  device_planning_assumption_historical: apple_silicon_m4  # original Phase 0 hard constraint; superseded, not deleted
+  device_actual_primary: apple_m3_pro  # measured via sysctl; see docs/compute_budget.md
+  memory_gb_planning_assumption_historical: 16
+  memory_gb_actual: 18
   backend: pytorch_mps
   notes: >
-    No CUDA. All runtime/memory estimates are placeholders until a smoke
-    test is run in Phase 1 to measure actual MPS throughput.
+    No CUDA. Runtime/memory estimates are no longer placeholders for 28px
+    and 64px -- see docs/pilot_audit.md's corrected canonical benchmark
+    (native, checksum-verified official data) and docs/phase2b_protocol.md
+    sec.6 for 128px's own gate (not yet measured).
 
 seeds:
   confirmatory: [0, 1, 2]
   # One-seed pilots are exploratory scaffolding for pipeline validation
   # only (Phase 1), not a separate reduced-scope matrix, and are never
   # reported as confirmatory results (see statistical_analysis_plan.md).
+  #
+  # Phase 2A pilot seed 314159 (see docs/pilot_protocol.md) is PERMANENTLY
+  # EXCLUDED from this list and must never be added. The Phase 2A pilot's
+  # TTA seed 271828 (docs/pilot_protocol.md) must not be reused as any
+  # confirmatory TTA seed. Per docs/phase2b_protocol.md sec.7, the
+  # confirmatory runner must hard-fail if seed 314159 is ever requested.
 
 datasets:
   # Official MedMNIST split counts, per source-paper verification.
@@ -162,15 +190,21 @@ training_matrix:
 
   D_conditional_128px:
     description: >
-      CONDITIONAL — only executed if the documented runtime/memory kill
-      criterion in docs/compute_budget.md passes after measuring the 64px
-      tier. Strengthens H2 as a trend claim only if all 3 seeds complete.
+      CONDITIONAL — activates as an entire six-run block only if the
+      numeric trigger frozen in docs/phase2b_protocol.md sec.6 passes
+      (native, checksum-verified 128px artifacts for both datasets;
+      MPS benchmark completes without OOM/non-finite loss; <=90min/run
+      training; <=120min/cell end-to-end; pessimistic A+B+C+D total
+      <24h; decision uses runtime/memory evidence only, never
+      accuracy/TTA outcomes). If either dataset fails any gate, Block D
+      is omitted in its entirety. Strengthens H2 as a trend claim only
+      if all 3 seeds complete.
     datasets: [pathmnist, bloodmnist]
     resolution: 128
     normalization: batchnorm
     seeds: [0, 1, 2]
     training_runs: 6  # 2 datasets x 1 resolution x 1 norm x 3 seeds
-    status: conditional_not_yet_approved
+    status: approved_conditional  # sign-off given; execution still gated on docs/phase2b_protocol.md sec.6's numeric trigger, not yet evaluated
 
 training_run_totals:
   before_conditional_tier: 33   # A(24) + B(6) + C(3)

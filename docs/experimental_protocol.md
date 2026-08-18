@@ -1,6 +1,14 @@
 # Experimental Protocol
 
-**Status: draft, Phase 0. Not yet approved for execution.**
+**Status: baseline matrix (blocks A/B/C, `configs/experiment_matrix.yaml`)
+APPROVED as of Phase 2B.1 — see `docs/phase2b_protocol.md` for the frozen,
+authoritative training settings, evaluation conditions, BN-adaptation
+semantics, test firewall, Block D trigger, and reproducibility
+requirements, which take precedence over this document wherever the two
+differ. Block D remains approved-but-conditional (see
+`docs/phase2b_protocol.md` sec.6). Validation-Gated TTA (H4) below remains
+**draft, not approved** — its algorithm is not frozen. No Phase 2B runner
+exists yet; nothing below has been executed.**
 
 ## Models
 
@@ -155,6 +163,19 @@ ledger.
 
 ## Test firewall
 
+**SUPERSEDED by `docs/phase2b_protocol.md` sec.5 (Phase 2B.1) — the
+original draft below is preserved for history, not deleted, but the
+strengthened order in `docs/phase2b_protocol.md` is now authoritative.**
+The key change: the original draft below permitted blocks A/B/C training
+runs to touch the official test set directly, as a "verification check,"
+during Phase 2B training itself. The strengthened version **defers all
+test-set access — including blocks A/B/C's — to after Validation-Gated
+TTA's algorithm and thresholds are frozen and committed**, so that no
+baseline test result can influence method development even indirectly.
+See `docs/phase2b_protocol.md` sec.5 for the frozen 9-step order.
+
+Original draft (superseded, kept for audit trail):
+
 - Source-paper reproduction (blocks A/B/C training runs, plus exact
   Table-2-style reproduction using the source paper's fixed, published
   configuration) is kept **separate from method development** — reproducing
@@ -178,10 +199,12 @@ ledger.
   without reading individual test predictions, and re-run rather than
   patching based on an observed test-set failure.
 - Every test-set evaluation, without exception, is recorded as a row in the
-  append-only run ledger (`results/ledger.csv`), including the config hash,
-  git commit, and timestamp, so it is possible to audit both that no
-  test-set peeking occurred before freezing and how many times the test set
-  was evaluated at all.
+  append-only run ledger (**`artifacts/ledger.csv`** — corrected path; the
+  code implementation uses `artifacts/`, not `results/`, see
+  `src/when_tta_hurts/ledger.py`), including the config hash, git commit,
+  and timestamp, so it is possible to audit both that no test-set peeking
+  occurred before freezing and how many times the test set was evaluated
+  at all.
 
 ## Endpoints
 
