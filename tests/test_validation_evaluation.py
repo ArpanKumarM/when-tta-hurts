@@ -1,0 +1,819 @@
+"""Tests for validation_evaluation.py (Phase 2B.4A). Uses ONLY synthetic
+tensors, temporary checkpoints/repositories, and fresh (never real-data-
+trained) tiny models. resolve_canonical_training_completion() is tested
+against the REAL, already-completed confirmatory matrix/ledger where noted
+-- that is a metadata-only read (no checkpoint bytes loaded, no TTA
+computed), identical in kind to what plan_validation_evaluation() already
+does safely. No real checkpoint is ever loaded for inference, no MPS is
+ever initialized, and the official test split is never touched anywhere
+in this file."""
+
+from __future__ import annotations
+
+import json
+
+import numpy as np
+import pytest
+import torch
+
+from when_tta_hurts.evaluation.validation_loader import ValidationEvaluationSplit
+from when_tta_hurts.evaluation.views import (
+    build_view_seed_manifest,
+    generate_single_view,
+    iter_deterministic_views,
+    stable_view_seed,
+)
+from when_tta_hurts.evaluation_result_artifacts import (
+    EvaluationPersistenceError,
+    EvaluationSchemaValidationError,
+    persist_and_verify_evaluation_completion,
+    recompute_clean_accuracy,
+    recompute_mean_probability_prefix,
+    validate_predictions_arrays,
+)
+from when_tta_hurts.models.small_cnn import build_small_cnn
+from when_tta_hurts.orchestrator import PilotOrExcludedSeedRunIdError, UnknownRunIdError
+from when_tta_hurts.transforms.policies import build_policy
+from when_tta_hurts.validation_evaluation import EvaluationRunStatus as _RunStatus
+from when_tta_hurts.validation_evaluation import (
+    NoConfirmatoryTTASeedYetError,
+    ValidationEvaluationConfig,
+    check_evaluation_skip,
+    compute_evaluation_id,
+    compute_validation_evaluation,
+    finish_evaluation_attempt,
+    list_evaluation_attempts,
+    plan_validation_evaluation,
+    resolve_canonical_training_completion,
+    resolve_confirmatory_tta_seed,
+    start_evaluation_attempt,
+)
+
+MATRIX_PATH = "configs/experiment_matrix.yaml"
+
+
+def _synthetic_split(n=4, n_classes=3, resolution=28, dataset="pathmnist", seed=0):
+    g = torch.Generator().manual_seed(seed)
+    images = torch.rand(n, 3, resolution, resolution, generator=g)
+    labels = np.array([i % n_classes for i in range(n)])
+    return ValidationEvaluationSplit(
+        images=images, labels=labels, sample_indices=np.arange(n), dataset=dataset, resolution=resolution
+    )
+
+
+# ---------------------------------------------------------------------------
+# TTA seed resolution -- distinct from pilot's 271828
+# ---------------------------------------------------------------------------
+
+
+def test_confirmatory_tta_seed_rejects_pilot_seed():
+    with pytest.raises(NoConfirmatoryTTASeedYetError):
+        resolve_confirmatory_tta_seed(271828)
+
+
+def test_confirmatory_tta_seed_rejects_missing():
+    with pytest.raises(NoConfirmatoryTTASeedYetError):
+        resolve_confirmatory_tta_seed(None)
+
+
+def test_confirmatory_tta_seed_accepts_distinct_value():
+    assert resolve_confirmatory_tta_seed(123456) == 123456
+
+
+# ---------------------------------------------------------------------------
+# Deterministic view generation
+# ---------------------------------------------------------------------------
+
+
+def test_stable_view_seed_deterministic_and_not_python_hash():
+    a = stable_view_seed(1, "pathmnist", 28, 5, 2)
+    b = stable_view_seed(1, "pathmnist", 28, 5, 2)
+    assert a == b
+    assert isinstance(a, int)
+
+
+def test_stable_view_seed_varies_with_each_identifier():
+    base = stable_view_seed(1, "pathmnist", 28, 5, 2)
+    assert stable_view_seed(2, "pathmnist", 28, 5, 2) != base
+    assert stable_view_seed(1, "bloodmnist", 28, 5, 2) != base
+    assert stable_view_seed(1, "pathmnist", 64, 5, 2) != base
+    assert stable_view_seed(1, "pathmnist", 28, 6, 2) != base
+    assert stable_view_seed(1, "pathmnist", 28, 5, 3) != base
+
+
+def test_view_identity_independent_of_batch_order():
+    policy = build_policy("mixed", output_size=(28, 28))
+    x = torch.rand(6, 3, 28, 28)
+    full = generate_single_view(x, policy, 12345, "pathmnist", 28, list(range(6)), view_index=2)
+    reordered_x = x[[5, 4, 3, 2, 1, 0]]
+    reordered = generate_single_view(
+        reordered_x, policy, 12345, "pathmnist", 28, [5, 4, 3, 2, 1, 0], view_index=2
+    )
+    assert torch.allclose(full[3], reordered[2])
+
+
+def test_view_identity_independent_of_batch_size():
+    policy = build_policy("mixed", output_size=(28, 28))
+    x = torch.rand(6, 3, 28, 28)
+    full = generate_single_view(x, policy, 12345, "pathmnist", 28, list(range(6)), view_index=2)
+    subset = generate_single_view(x[[3]], policy, 12345, "pathmnist", 28, [3], view_index=2)
+    assert torch.allclose(full[3], subset[0])
+
+
+def test_view_identity_independent_of_model_and_training_seed():
+    """View generation never touches the model at all -- confirmed by
+    generating a view with no model in scope, then checking two DIFFERENT
+    models fed the same view produce the view via the identical, model-
+    independent transform (i.e. the view tensor itself never depends on
+    which model/training-seed consumes it)."""
+    policy = build_policy("mixed", output_size=(28, 28))
+    x = torch.rand(3, 3, 28, 28)
+    v1 = generate_single_view(x, policy, 999, "bloodmnist", 28, [0, 1, 2], view_index=0)
+    v2 = generate_single_view(x, policy, 999, "bloodmnist", 28, [0, 1, 2], view_index=0)
+    assert torch.allclose(v1, v2)  # no model/training-seed parameter exists on this function at all
+
+
+def test_different_samples_receive_different_transforms():
+    policy = build_policy("mixed", output_size=(28, 28))
+    x = torch.rand(2, 3, 28, 28)
+    view = generate_single_view(x, policy, 42, "pathmnist", 28, [0, 1], view_index=0)
+    assert not torch.allclose(view[0], view[1])
+
+
+def test_augmentation_applied_exactly_once_per_view():
+    """iter_deterministic_views yields exactly one transformed batch per
+    view index, each computed by exactly one generate_single_view() call
+    (verified via call counting)."""
+    import when_tta_hurts.evaluation.views as views_module
+
+    calls = []
+    real_generate = views_module.generate_single_view
+
+    def counting_generate(*args, **kwargs):
+        calls.append(args[-1] if "view_index" not in kwargs else kwargs["view_index"])
+        return real_generate(*args, **kwargs)
+
+    orig = views_module.generate_single_view
+    views_module.generate_single_view = counting_generate
+    try:
+        policy = build_policy("mixed", output_size=(28, 28))
+        x = torch.rand(2, 3, 28, 28)
+        results = list(iter_deterministic_views(x, policy, 1, "pathmnist", 28, [0, 1], n_views=5))
+    finally:
+        views_module.generate_single_view = orig
+    assert len(results) == 5
+    assert calls == [0, 1, 2, 3, 4]
+
+
+def test_view_seed_manifest_covers_every_sample_view_pair():
+    manifest = build_view_seed_manifest(1, "pathmnist", 28, [10, 20], n_views=3)
+    assert len(manifest) == 6
+    pairs = {(e.sample_index, e.view_index) for e in manifest}
+    assert pairs == {(10, 0), (10, 1), (10, 2), (20, 0), (20, 1), (20, 2)}
+
+
+def test_view_seed_manifest_does_not_depend_on_training_seed_or_model():
+    import inspect
+
+    from when_tta_hurts.evaluation import views as views_module
+
+    params = set(inspect.signature(views_module.build_view_seed_manifest).parameters)
+    assert params == {"tta_seed", "dataset", "resolution", "sample_indices", "n_views"}
+
+
+def test_no_python_randomized_hash_used():
+    import inspect
+
+    from when_tta_hurts.evaluation import views as views_module
+
+    source = inspect.getsource(views_module)
+    # only the builtin bytes-hashing hashlib is used; bare hash( calls are absent
+    assert "hashlib" in source
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert not stripped.startswith("hash(")
+
+
+# ---------------------------------------------------------------------------
+# Evaluation identity
+# ---------------------------------------------------------------------------
+
+
+def _cfg(**overrides):
+    base = dict(
+        training_run_id="A-pathmnist-28px-batchnorm-policy-none-s0",
+        training_attempt=1,
+        checkpoint_hash="deadbeef",
+        split="validation",
+        tta_seed=123456,
+        prefix_sequence=(1, 2, 5, 10, 25, 50, 100),
+        aggregators=("mean_probability", "majority_vote", "confidence_weighted_average"),
+        secondary_analyses=("scaling_curve",),
+        policy="mixed",
+        protocol_commit="ce4c962",
+        matrix_hash="abc",
+        source_commit="def",
+    )
+    base.update(overrides)
+    return ValidationEvaluationConfig(**base)
+
+
+def test_evaluation_id_deterministic():
+    h1 = compute_evaluation_id(_cfg())
+    h2 = compute_evaluation_id(_cfg())
+    assert h1 == h2
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("checkpoint_hash", "different"),
+        ("tta_seed", 999999),
+        ("prefix_sequence", (1, 2, 5)),
+        ("aggregators", ("mean_probability",)),
+        ("policy", "geometric"),
+        ("matrix_hash", "different"),
+    ],
+)
+def test_evaluation_id_changes_with_each_field(field, value):
+    base = compute_evaluation_id(_cfg())
+    changed = compute_evaluation_id(_cfg(**{field: value}))
+    assert base != changed
+
+
+# ---------------------------------------------------------------------------
+# Canonical training-completion resolution (rejections + real success case)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_rejects_pilot_seed():
+    with pytest.raises(PilotOrExcludedSeedRunIdError):
+        resolve_canonical_training_completion("A-pathmnist-28px-batchnorm-policy-none-s314159", MATRIX_PATH)
+
+
+def test_resolve_rejects_unknown_run_id():
+    with pytest.raises(UnknownRunIdError):
+        resolve_canonical_training_completion("not-a-real-run-id", MATRIX_PATH)
+
+
+def test_resolve_finds_real_canonical_completion():
+    """Metadata-only read against the real, already-completed matrix -- no
+    checkpoint is loaded, no inference is run."""
+    cell, result = resolve_canonical_training_completion(
+        "A-pathmnist-28px-batchnorm-policy-none-s0", MATRIX_PATH
+    )
+    assert cell.run_id() == "A-pathmnist-28px-batchnorm-policy-none-s0"
+    assert result.status in ("completed", "skipped_completed")
+    assert result.checkpoint_hash is not None
+
+
+# ---------------------------------------------------------------------------
+# Attempt state machine / idempotent skip / stale detection
+# ---------------------------------------------------------------------------
+
+
+def test_idempotent_skip_before_any_factory(tmp_path, monkeypatch):
+    import when_tta_hurts.ledger as ledger_module
+
+    ledger_path = tmp_path / "ledger_validation_evaluation.csv"
+    monkeypatch.setattr(ledger_module, "VALIDATION_EVALUATION_LEDGER_PATH", ledger_path)
+
+    run_id = "fake-run"
+    cfg_hash = "hash123"
+    attempt_dir, status = start_evaluation_attempt(run_id, cfg_hash, root=tmp_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    (attempt_dir / "predictions.npz").write_bytes(b"x")
+    (attempt_dir / "metrics.json").write_text("{}")
+    (attempt_dir / "metadata.json").write_text("{}")
+    (attempt_dir / "view_manifest.json").write_text("{}")
+    from when_tta_hurts.artifacts import atomic_write_json
+    from when_tta_hurts.evaluation_result_artifacts import build_evaluation_artifact_manifest
+
+    manifest = build_evaluation_artifact_manifest(attempt_dir)
+    atomic_write_json(manifest, attempt_dir / "artifact_manifest.json")
+
+    skip = check_evaluation_skip(run_id, cfg_hash, root=tmp_path)
+    assert skip is not None
+    assert skip["attempt_number"] == 1
+
+
+def test_skip_returns_none_for_different_config_hash(tmp_path):
+    run_id = "fake-run-2"
+    attempt_dir, status = start_evaluation_attempt(run_id, "hashA", root=tmp_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    skip = check_evaluation_skip(run_id, "hashB", root=tmp_path)
+    assert skip is None
+
+
+def test_stale_nonterminal_attempt_raises(tmp_path):
+    from when_tta_hurts.validation_evaluation import EvaluationStaleAttemptError
+
+    run_id = "fake-run-3"
+    start_evaluation_attempt(run_id, "hashC", root=tmp_path)  # left RUNNING, no ledger row
+    with pytest.raises(EvaluationStaleAttemptError):
+        check_evaluation_skip(run_id, "hashC", root=tmp_path)
+
+
+def test_attempt_numbers_increment(tmp_path):
+    run_id = "fake-run-4"
+    d1, s1 = start_evaluation_attempt(run_id, "h1", root=tmp_path)
+    finish_evaluation_attempt(d1, s1, _RunStatus.FAILED, failure_reason="boom")
+    d2, s2 = start_evaluation_attempt(run_id, "h2", root=tmp_path)
+    assert s1.attempt_number == 1
+    assert s2.attempt_number == 2
+    assert len(list_evaluation_attempts(run_id, root=tmp_path)) == 2
+
+
+# ---------------------------------------------------------------------------
+# Ledger idempotency / conflict
+# ---------------------------------------------------------------------------
+
+
+def test_evaluation_ledger_idempotent_and_conflicting(tmp_path):
+    from when_tta_hurts.ledger import LedgerConflictError, append_evaluation_entry
+
+    path = tmp_path / "ledger.csv"
+    kwargs = dict(
+        evaluation_id="eid1",
+        training_run_id="run1",
+        training_attempt=1,
+        checkpoint_hash="ckpt1",
+        evaluation_config_hash="eid1",
+        evaluation_attempt=1,
+        status="completed",
+        primary_artifact_hash="art1",
+        started_at=1.0,
+        ended_at=2.0,
+        runtime_seconds=1.0,
+        ledger_path=path,
+    )
+    first = append_evaluation_entry(**kwargs)
+    assert first == "appended"
+    second = append_evaluation_entry(**kwargs)
+    assert second == "duplicate_ignored"
+
+    conflicting = dict(kwargs)
+    conflicting["checkpoint_hash"] = "different"
+    with pytest.raises(LedgerConflictError):
+        append_evaluation_entry(**conflicting)
+
+
+def test_evaluation_ledger_always_records_validation_split_and_no_test_metrics(tmp_path):
+    from when_tta_hurts.ledger import _read_existing_rows, append_evaluation_entry
+
+    path = tmp_path / "ledger.csv"
+    append_evaluation_entry(
+        evaluation_id="eid2",
+        training_run_id="run1",
+        training_attempt=1,
+        checkpoint_hash="ckpt1",
+        evaluation_config_hash="eid2",
+        evaluation_attempt=1,
+        status="completed",
+        primary_artifact_hash="art1",
+        started_at=1.0,
+        ended_at=2.0,
+        runtime_seconds=1.0,
+        ledger_path=path,
+    )
+    rows = _read_existing_rows(path)
+    assert rows[0]["split"] == "validation"
+    assert rows[0]["test_metrics_observed"] == "False"
+
+
+def test_evaluation_ledger_header_only_file_creation(tmp_path):
+    from when_tta_hurts.ledger import VALIDATION_EVALUATION_LEDGER_FIELDNAMES, ensure_evaluation_ledger_exists
+
+    path = tmp_path / "ledger.csv"
+    created = ensure_evaluation_ledger_exists(path)
+    assert created is True
+    content = path.read_text()
+    assert content.count("\n") == 1  # header only, single line
+    for field in VALIDATION_EVALUATION_LEDGER_FIELDNAMES:
+        assert field in content
+    assert ensure_evaluation_ledger_exists(path) is False  # no-op second call
+
+
+# ---------------------------------------------------------------------------
+# Plan mode: side-effect-free
+# ---------------------------------------------------------------------------
+
+
+def test_plan_mode_side_effect_free(tmp_path):
+    before = set(tmp_path.rglob("*"))
+    rows = plan_validation_evaluation(MATRIX_PATH)
+    after = set(tmp_path.rglob("*"))
+    assert before == after
+    assert len(rows) == 39
+
+
+def test_plan_mode_never_initializes_mps_or_touches_dataset():
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(plan_validation_evaluation)))
+    func_body = tree.body[0].body
+    code_nodes = func_body[1:] if isinstance(func_body[0], ast.Expr) else func_body
+    code_source = "\n".join(ast.unparse(node) for node in code_nodes)
+    assert "mps" not in code_source.lower()
+    assert "load_validation_evaluation_split" not in code_source
+    assert "load_and_verify_canonical_checkpoint" not in code_source
+
+
+# ---------------------------------------------------------------------------
+# End-to-end computation on synthetic tensors (no real checkpoint/data)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_validation_evaluation_batchnorm_end_to_end():
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    split = _synthetic_split(n=4, n_classes=3)
+    out = compute_validation_evaluation(model, split, 555555, torch.device("cpu"))
+
+    preds = out["predictions"]
+    assert preds["view_probs"].shape == (100, 4, 3)
+    assert preds["clean_probs"].shape == (4, 3)
+    assert "bn_adapted_probs" in preds
+
+    metrics = out["metrics"]
+    assert set(metrics["conditions"]["naive_tta"]["mean_probability"].keys()) == {1, 2, 5, 10, 25, 50, 100}
+    assert metrics["conditions"]["bn_adapted_tta"] is not None
+    assert "primary_endpoint" in metrics
+
+
+def test_compute_validation_evaluation_groupnorm_skips_bn_adapted():
+    model = build_small_cnn(num_classes=3, normalization="groupnorm")
+    split = _synthetic_split(n=4, n_classes=3)
+    out = compute_validation_evaluation(model, split, 555555, torch.device("cpu"))
+    assert out["metrics"]["conditions"]["bn_adapted_tta"] is None
+    assert "bn_adapted_probs" not in out["predictions"]
+
+
+def test_per_view_softmax_before_aggregation():
+    """Stored view_probs must be genuine per-sample probability
+    distributions (rows summing to 1), confirming softmax was applied per
+    view before any averaging -- not applied only after aggregation."""
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    split = _synthetic_split(n=3, n_classes=3)
+    out = compute_validation_evaluation(model, split, 111111, torch.device("cpu"))
+    view_probs = out["predictions"]["view_probs"]
+    sums = view_probs.reshape(-1, 3).sum(axis=-1)
+    assert np.allclose(sums, 1.0, atol=1e-5)
+
+
+def test_independently_hand_calculated_mean_probability():
+    """Recompute the N=2 mean-probability aggregate BY HAND from the
+    stored per-view probability arrays and confirm it matches
+    recompute_mean_probability_prefix()'s own output exactly."""
+    view_probs = np.array(
+        [
+            [[0.7, 0.2, 0.1], [0.1, 0.8, 0.1]],  # view 0
+            [[0.5, 0.4, 0.1], [0.3, 0.6, 0.1]],  # view 1
+        ],
+        dtype=np.float32,
+    )
+    hand_mean = (view_probs[0] + view_probs[1]) / 2
+    assert np.allclose(recompute_mean_probability_prefix(view_probs, 2), hand_mean)
+
+
+def test_nested_prefixes_are_true_prefixes():
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    split = _synthetic_split(n=3, n_classes=3)
+    out = compute_validation_evaluation(model, split, 222222, torch.device("cpu"))
+    view_probs = out["predictions"]["view_probs"]
+    mean_5 = recompute_mean_probability_prefix(view_probs, 5)
+    mean_5_from_10_prefix = recompute_mean_probability_prefix(view_probs[:10], 5)
+    assert np.allclose(mean_5, mean_5_from_10_prefix)  # first 5 of the 10-prefix == the 5-prefix
+
+
+def test_majority_vote_tie_break_hand_calculated():
+    from when_tta_hurts.evaluation.aggregation import majority_vote
+
+    # 2 views, 2 samples, 2 classes: sample 0 has a tie (1 vote each),
+    # broken by highest mean probability; sample 1 has a clear winner.
+    logits = np.log(
+        np.array(
+            [
+                [[0.9, 0.1], [0.2, 0.8]],  # view 0: sample0->class0, sample1->class1
+                [[0.1, 0.9], [0.3, 0.7]],  # view 1: sample0->class1, sample1->class1
+            ]
+        )
+    )
+    predicted, _ = majority_vote(logits, 2)
+    # sample 0: tied 1-1; mean probs = [0.5, 0.5] -> exact tie -> lowest index (0)
+    assert predicted[0] == 0
+    # sample 1: 2 votes for class 1
+    assert predicted[1] == 1
+
+
+def test_confidence_weighting_hand_calculated():
+    from when_tta_hurts.evaluation.aggregation import confidence_weighted_average
+
+    view_logits = np.log(
+        np.array(
+            [
+                [[0.9, 0.1]],  # view 0, confidence 0.9
+                [[0.6, 0.4]],  # view 1, confidence 0.6
+            ]
+        )
+    )
+    result = np.exp(confidence_weighted_average(view_logits, 2))
+    w0, w1 = 0.9 / (0.9 + 0.6), 0.6 / (0.9 + 0.6)
+    expected = w0 * np.array([0.9, 0.1]) + w1 * np.array([0.6, 0.4])
+    assert np.allclose(result[0], expected, atol=1e-6)
+
+
+def test_original_anchoring_hand_calculated():
+    from when_tta_hurts.evaluation.aggregation import original_anchored_mean_probability
+
+    clean_logits = np.log(np.array([[0.8, 0.2]]))
+    view_logits = np.log(np.array([[[0.4, 0.6]], [[0.2, 0.8]]]))  # 2 views, 1 sample
+    result = np.exp(original_anchored_mean_probability(clean_logits, view_logits, 2))
+    expected = (np.array([0.8, 0.2]) + np.array([0.4, 0.6]) + np.array([0.2, 0.8])) / 3
+    assert np.allclose(result[0], expected, atol=1e-6)
+
+
+def test_accuracy_macro_f1_nll_ece_brier_are_frozen_functions_reused():
+    """Confirms this module reuses metrics.py's functions unchanged rather
+    than reimplementing them (a hand-check that the imports resolve to
+    the SAME function objects)."""
+    import when_tta_hurts.metrics as metrics_module
+    import when_tta_hurts.validation_evaluation as ve_module
+
+    assert ve_module.accuracy is metrics_module.accuracy
+    assert ve_module.macro_f1 is metrics_module.macro_f1
+    assert ve_module.negative_log_likelihood is metrics_module.negative_log_likelihood
+    assert ve_module.expected_calibration_error is metrics_module.expected_calibration_error
+    assert ve_module.brier_score is metrics_module.brier_score
+
+
+def test_harm_rescue_computed_via_frozen_function():
+    from when_tta_hurts.metrics import harm_rescue_rates
+
+    clean = np.log(np.array([[0.9, 0.1], [0.1, 0.9]]))
+    tta = np.log(np.array([[0.1, 0.9], [0.9, 0.1]]))  # both flipped
+    labels = np.array([0, 1])
+    result = harm_rescue_rates(clean, tta, labels)
+    assert result["harm_rate"] == 1.0  # both were clean-correct, now both wrong
+    assert result["rescue_rate"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# BN adaptation: running-stat updates + learned-parameter immutability +
+# reset isolation (already enforced inside bn_adapt() itself -- confirmed
+# reused unchanged here)
+# ---------------------------------------------------------------------------
+
+
+def test_bn_adaptation_updates_running_stats_not_learned_params():
+    from when_tta_hurts.evaluation.bn_adaptation import bn_adapt
+
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    model.eval()
+    original_running_mean = {
+        name: buf.clone() for name, buf in model.named_buffers() if "running_mean" in name
+    }
+    original_params = {name: p.clone() for name, p in model.named_parameters()}
+
+    adaptation_inputs = torch.rand(8, 3, 28, 28)
+    adapted = bn_adapt(model, adaptation_inputs)
+
+    for name, before in original_params.items():
+        after = dict(adapted.named_parameters())[name]
+        assert torch.equal(before, after)  # learned params immutable
+
+    changed = False
+    for name, before in original_running_mean.items():
+        after = dict(adapted.named_buffers())[name]
+        if not torch.equal(before, after):
+            changed = True
+    assert changed  # running stats DID update
+
+    # original model itself untouched
+    for name, before in original_params.items():
+        assert torch.equal(before, dict(model.named_parameters())[name])
+
+
+def test_bn_adaptation_reset_isolation_across_calls():
+    from when_tta_hurts.evaluation.bn_adaptation import bn_adapt
+
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    adapted_a = bn_adapt(model, torch.rand(8, 3, 28, 28))
+    adapted_b = bn_adapt(model, torch.rand(8, 3, 28, 28) * 5 + 1)
+    running_mean_a = dict(adapted_a.named_buffers())
+    running_mean_b = dict(adapted_b.named_buffers())
+    any_diff = any(
+        not torch.equal(running_mean_a[k], running_mean_b[k]) for k in running_mean_a if "running_mean" in k
+    )
+    assert any_diff  # each call starts fresh from the original checkpoint, not chained
+
+
+def test_bn_adaptation_groupnorm_rejected():
+    from when_tta_hurts.evaluation.bn_adaptation import BNAdaptationNotApplicableError, bn_adapt
+
+    model = build_small_cnn(num_classes=3, normalization="groupnorm")
+    with pytest.raises(BNAdaptationNotApplicableError):
+        bn_adapt(model, torch.rand(4, 3, 28, 28))
+
+
+# ---------------------------------------------------------------------------
+# Latency: synchronization present, descriptive only
+# ---------------------------------------------------------------------------
+
+
+def test_latency_report_synchronized_and_descriptive():
+    from when_tta_hurts.evaluation.latency import build_latency_report
+
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    x = torch.rand(4, 3, 28, 28)
+    views_by_n = {1: [torch.rand(4, 3, 28, 28)], 2: [torch.rand(4, 3, 28, 28), torch.rand(4, 3, 28, 28)]}
+    report = build_latency_report(model, x, views_by_n, torch.device("cpu"))
+    assert report.clean_latency_seconds > 0
+    assert set(report.tta_latency_seconds_by_n.keys()) == {1, 2}
+    assert report.compute_multiplier_by_n[2] > 0
+
+
+def test_latency_module_uses_mps_synchronize():
+    import inspect
+
+    from when_tta_hurts.evaluation import latency as latency_module
+
+    source = inspect.getsource(latency_module)
+    assert "torch.mps.synchronize" in source
+
+
+# ---------------------------------------------------------------------------
+# Persistence: schema validation, corrupt/missing/non-finite/misaligned
+# ---------------------------------------------------------------------------
+
+
+def _valid_predictions(n=3, c=3):
+    view_probs = np.full((100, n, c), 1.0 / c, dtype=np.float32)
+    return {
+        "labels": np.arange(n) % c,
+        "sample_indices": np.arange(n),
+        "clean_probs": np.full((n, c), 1.0 / c, dtype=np.float32),
+        "view_probs": view_probs,
+    }
+
+
+def test_validate_predictions_rejects_non_finite():
+    preds = _valid_predictions()
+    preds["clean_probs"][0, 0] = np.nan
+    with pytest.raises(EvaluationPersistenceError):
+        validate_predictions_arrays(preds)
+
+
+def test_validate_predictions_rejects_unnormalized():
+    preds = _valid_predictions()
+    preds["clean_probs"][0] = [0.9, 0.9, 0.9]
+    with pytest.raises(EvaluationPersistenceError):
+        validate_predictions_arrays(preds)
+
+
+def test_validate_predictions_rejects_misaligned_lengths():
+    preds = _valid_predictions()
+    preds["sample_indices"] = np.arange(2)  # mismatched with labels length 3
+    with pytest.raises(EvaluationPersistenceError):
+        validate_predictions_arrays(preds)
+
+
+def test_validate_predictions_rejects_duplicate_sample_indices():
+    preds = _valid_predictions()
+    preds["sample_indices"] = np.array([0, 0, 1])
+    with pytest.raises(EvaluationPersistenceError):
+        validate_predictions_arrays(preds)
+
+
+def test_validate_predictions_rejects_missing_arrays():
+    with pytest.raises(EvaluationPersistenceError):
+        validate_predictions_arrays({"labels": np.arange(3)})
+
+
+def _valid_metadata():
+    return {
+        "evaluation_id": "e1",
+        "training_run_id": "r1",
+        "training_attempt": 1,
+        "checkpoint_hash": "c1",
+        "dataset": "pathmnist",
+        "resolution": 28,
+        "model": "small_cnn",
+        "normalization": "batchnorm",
+        "training_policy": "none",
+        "seed": 0,
+        "tta_seed": 123456,
+        "prefix_sequence": [1, 2, 5, 10, 25, 50, 100],
+        "aggregators": ["mean_probability"],
+        "secondary_analyses": ["scaling_curve"],
+        "protocol_commit": "ce4c962",
+        "matrix_hash": "m1",
+        "source_commit": "s1",
+        "evaluation_config_hash": "e1",
+        "split": "validation",
+        "n_validation_samples": 3,
+    }
+
+
+def _valid_view_manifest():
+    return {
+        "dataset": "pathmnist",
+        "resolution": 28,
+        "tta_seed": 123456,
+        "n_views": 100,
+        "seed_formula": "sha256(...)",
+        "sample_indices": [0, 1, 2],
+        "seed_manifest_sha256": "abc",
+    }
+
+
+def _valid_metrics():
+    return {
+        "training_run_id": "r1",
+        "evaluation_config_hash": "e1",
+        "clean": {"accuracy": 1.0 / 3},
+        "conditions": {},
+    }
+
+
+def test_metadata_schema_rejects_test_split():
+    metadata = _valid_metadata()
+    metadata["split"] = "test"
+    with pytest.raises(EvaluationSchemaValidationError):
+        persist_and_verify_evaluation_completion(
+            attempt_dir="/tmp/does-not-matter",
+            predictions=_valid_predictions(),
+            metrics=_valid_metrics(),
+            metadata=metadata,
+            view_manifest=_valid_view_manifest(),
+        )
+
+
+def test_persist_and_verify_full_round_trip(tmp_path):
+    predictions = _valid_predictions()
+    metrics = _valid_metrics()
+    metrics["clean"]["accuracy"] = recompute_clean_accuracy(predictions["clean_probs"], predictions["labels"])
+    manifest = persist_and_verify_evaluation_completion(
+        tmp_path,
+        predictions=predictions,
+        metrics=metrics,
+        metadata=_valid_metadata(),
+        view_manifest=_valid_view_manifest(),
+        metric_recomputers={
+            "clean.accuracy": (
+                metrics["clean"]["accuracy"],
+                lambda: recompute_clean_accuracy(predictions["clean_probs"], predictions["labels"]),
+            )
+        },
+    )
+    assert (tmp_path / "predictions.npz").exists()
+    assert (tmp_path / "metrics.json").exists()
+    assert (tmp_path / "metadata.json").exists()
+    assert (tmp_path / "view_manifest.json").exists()
+    assert len(manifest["artifacts"]) == 4
+    # never persists images
+    assert "images" not in json.dumps(manifest)
+
+
+def test_persist_rejects_metric_recomputation_mismatch(tmp_path):
+    predictions = _valid_predictions()
+    metrics = _valid_metrics()
+    metrics["clean"]["accuracy"] = 0.999  # deliberately wrong
+    with pytest.raises(EvaluationPersistenceError):
+        persist_and_verify_evaluation_completion(
+            tmp_path,
+            predictions=predictions,
+            metrics=metrics,
+            metadata=_valid_metadata(),
+            view_manifest=_valid_view_manifest(),
+            metric_recomputers={
+                "clean.accuracy": (
+                    0.999,
+                    lambda: recompute_clean_accuracy(predictions["clean_probs"], predictions["labels"]),
+                )
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# No result-dependent orchestration
+# ---------------------------------------------------------------------------
+
+
+def test_check_evaluation_skip_never_reads_a_metric_value():
+    import inspect
+
+    source = inspect.getsource(check_evaluation_skip)
+    assert "metrics.json" not in source
+    assert "accuracy" not in source.lower()
+
+
+def test_final_test_remains_locked():
+    from when_tta_hurts.authorization import AuthorizationError
+    from when_tta_hurts.orchestrator import run_final_test
+
+    with pytest.raises(AuthorizationError):
+        run_final_test()

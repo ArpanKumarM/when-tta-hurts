@@ -378,6 +378,134 @@ def append_amendment_entry(
     return "appended"
 
 
+# Separate append-only ledger for validation-only TTA-evaluation attempts
+# (Phase 2B.4A) -- kept separate from CONFIRMATORY_LEDGER_PATH for the same
+# column-alignment reason documented above (a different field set: training
+# run/attempt provenance, evaluation config hash, primary artifact hash,
+# rather than training-loop fields like block/checkpoint_hash-as-training-
+# result). This ledger NEVER records a test-split evaluation -- `split` is
+# always "validation" and `test_metrics_observed` is always False (see
+# append_evaluation_entry's docstring).
+VALIDATION_EVALUATION_LEDGER_PATH = Path("artifacts/ledger_validation_evaluation.csv")
+
+VALIDATION_EVALUATION_LEDGER_FIELDNAMES: tuple[str, ...] = (
+    "confirmatory",
+    "evaluation_id",
+    "training_run_id",
+    "training_attempt",
+    "checkpoint_hash",
+    "evaluation_config_hash",
+    "evaluation_attempt",
+    "split",
+    "status",
+    "primary_artifact_hash",
+    "started_at",
+    "ended_at",
+    "runtime_seconds",
+    "failure_reason",
+    "test_metrics_observed",
+)
+
+
+def ensure_evaluation_ledger_exists(ledger_path: str | Path = VALIDATION_EVALUATION_LEDGER_PATH) -> bool:
+    """Create a HEADER-ONLY validation-evaluation ledger file at
+    `ledger_path` if it does not already exist. Writes NO data row -- only
+    the column header, using VALIDATION_EVALUATION_LEDGER_FIELDNAMES so it
+    can never drift from what append_evaluation_entry actually writes.
+    Uses the identical csv.DictWriter + newline="" convention as
+    ensure_confirmatory_ledger_exists(), so the byte-level line-ending
+    behavior matches the existing ledgers exactly -- nothing is
+    "normalized" differently for this new file. Returns True if the file
+    was created, False if it already existed (no-op).
+    """
+    path = Path(ledger_path)
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(VALIDATION_EVALUATION_LEDGER_FIELDNAMES))
+        writer.writeheader()
+    return True
+
+
+def has_evaluation_row(
+    evaluation_id: str, evaluation_attempt: int, ledger_path: str | Path = VALIDATION_EVALUATION_LEDGER_PATH
+) -> bool:
+    """True iff ANY row (any status) exists for (evaluation_id,
+    evaluation_attempt) -- used to detect nonterminal attempts left over
+    from a prior invocation, mirroring has_confirmatory_row()."""
+    for row in _read_existing_rows(ledger_path):
+        if row.get("evaluation_id") == evaluation_id and row.get("evaluation_attempt") == str(
+            evaluation_attempt
+        ):
+            return True
+    return False
+
+
+def append_evaluation_entry(
+    *,
+    evaluation_id: str,
+    training_run_id: str,
+    training_attempt: int,
+    checkpoint_hash: str,
+    evaluation_config_hash: str,
+    evaluation_attempt: int,
+    status: str,
+    primary_artifact_hash: str,
+    started_at: float,
+    ended_at: float,
+    runtime_seconds: float,
+    failure_reason: str = "",
+    ledger_path: str | Path = VALIDATION_EVALUATION_LEDGER_PATH,
+) -> str:
+    """Append one validation-evaluation row. `split` is hardcoded to
+    "validation" and `test_metrics_observed` is hardcoded to False --
+    neither is a caller-overridable parameter, so this function cannot be
+    used to record a test-split evaluation even by mistake; a genuine
+    test-split evaluation (once authorized, post-Phase-2B.5) requires its
+    own, separately-designed ledger entry point.
+
+    Idempotency: keyed on (evaluation_id, evaluation_attempt) -- identical
+    duplicate -> "duplicate_ignored"; conflicting duplicate -> hard failure
+    (LedgerConflictError), exactly like append_confirmatory_entry().
+    """
+    row = {
+        "confirmatory": True,
+        "evaluation_id": evaluation_id,
+        "training_run_id": training_run_id,
+        "training_attempt": training_attempt,
+        "checkpoint_hash": checkpoint_hash,
+        "evaluation_config_hash": evaluation_config_hash,
+        "evaluation_attempt": evaluation_attempt,
+        "split": "validation",
+        "status": status,
+        "primary_artifact_hash": primary_artifact_hash,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "runtime_seconds": runtime_seconds,
+        "failure_reason": failure_reason,
+        "test_metrics_observed": False,
+    }
+    row_str = {k: str(v) for k, v in row.items()}
+
+    existing_rows = _read_existing_rows(ledger_path)
+    for existing in existing_rows:
+        if existing.get("evaluation_id") == evaluation_id and existing.get("evaluation_attempt") == str(
+            evaluation_attempt
+        ):
+            if existing == row_str:
+                return "duplicate_ignored"
+            raise LedgerConflictError(
+                f"Validation-evaluation ledger already has a DIFFERENT row for "
+                f"evaluation_id={evaluation_id}, evaluation_attempt={evaluation_attempt}. "
+                f"Existing: {existing}. New: {row_str}. Hard failure -- refusing to append "
+                f"a conflicting duplicate."
+            )
+
+    append_ledger_row(row, ledger_path)
+    return "appended"
+
+
 class LedgerSchemaError(RuntimeError):
     """Raised when a ledger row contains a malformed value for a field
     that must be strictly boolean (e.g. canonical_eligible). Fails

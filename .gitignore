@@ -19,6 +19,10 @@ artifacts/*
 !artifacts/ledger_incidents.csv
 !artifacts/ledger_confirmatory.csv
 !artifacts/ledger_amendments.csv
+# Phase 2B.4A validation-only TTA-evaluation ledger -- same append-only,
+# human-auditable-CSV rationale as the ledgers above. Committed header-only
+# during this engineering phase (no evaluation has run yet).
+!artifacts/ledger_validation_evaluation.csv
 # The canonical Block D runtime-gate decision (INCLUDED/OMITTED) is a small,
 # permanent, machine-readable record -- tracked deliberately, unlike the
 # detailed raw benchmark timing dump it's derived from (artifacts/benchmarks/,
