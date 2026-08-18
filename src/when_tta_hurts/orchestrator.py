@@ -18,16 +18,39 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
 
 from when_tta_hurts import ledger as ledger_module
 from when_tta_hurts.authorization import verify_authorization
+from when_tta_hurts.block_d_benchmark import (
+    DEFAULT_DECISION_PATH as _BLOCK_D_DEFAULT_DECISION_PATH,
+)
+from when_tta_hurts.block_d_benchmark import (
+    FROZEN_PROTOCOL_COMMIT as _BLOCK_D_FROZEN_PROTOCOL_COMMIT,
+)
+from when_tta_hurts.block_d_benchmark import (
+    SPEC_COMMIT as _BLOCK_D_SPEC_COMMIT,
+)
+from when_tta_hurts.block_d_benchmark import (
+    BlockDDecisionError,
+    _default_git_tracked_and_clean,
+    _sha256_file,
+    load_and_verify_block_d_decision,
+)
+from when_tta_hurts.block_d_gate import (
+    MAX_TRAINING_MINUTES_PER_RUN as _BLOCK_D_MAX_TRAINING_MINUTES_PER_RUN,
+)
 from when_tta_hurts.data import get_dataset_metadata, load_pilot_split
-from when_tta_hurts.dataset_verification import DEFAULT_DATA_ROOT, verify_official_dataset_artifact
+from when_tta_hurts.dataset_verification import (
+    DEFAULT_DATA_ROOT,
+    ArtifactVerification,
+    verify_official_dataset_artifact,
+)
 from when_tta_hurts.devices import select_device
 from when_tta_hurts.matrix import FROZEN_TRAINING_SETTINGS, MatrixCell, parse_and_validate_matrix
 from when_tta_hurts.models.resnet import build_resnet18_small_input
@@ -366,12 +389,25 @@ def check_confirmatory_skip(
     root: str | Path = "artifacts/confirmatory",
     amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
     confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    effective_config_hash: str | None = None,
 ) -> CellTrainResult | None:
     """Determine whether a canonical-eligible matching completion already
     exists, WITHOUT touching MPS, checksums, datasets, DataLoaders,
     models, or ledger append -- this function only reads run_identity's
     status.json files, artifact_manifest.json files, and the (small,
     local) amendments/confirmatory ledgers.
+
+    `effective_config_hash`: if given, used INSTEAD of cell_config_hash(cell)
+    as the hash a completed attempt must match to be skip-eligible -- for
+    Block D cells (see orchestrator.py::compute_block_d_effective_config_hash()).
+    A/B/C call sites leave this None, so their behavior is unchanged. This
+    is also how an idempotent Block D skip stays gate-decision-aware: if
+    the recorded gate decision has since changed (different selected
+    batch, different decision commit, etc.), the effective hash changes
+    too, so a stale completed attempt is no longer treated as a silent
+    match -- it instead hits the existing hash-mismatch hard failure below
+    (ConflictingCompletedRunError), exactly like any other protocol-drift
+    case, rather than a new attempt silently reusing an outdated result.
 
     Considers EVERY attempt for this run ID, in numeric order (not just
     the first) -- see list_attempts(). This matters because an early
@@ -408,7 +444,7 @@ def check_confirmatory_skip(
     decision.
     """
     run_id = cell.run_id()
-    this_hash = cell_config_hash(cell)
+    this_hash = effective_config_hash if effective_config_hash is not None else cell_config_hash(cell)
 
     all_attempts = list_attempts(cell, root)
     for status in all_attempts:
@@ -572,6 +608,9 @@ def run_train_validation_cell(
     dataset_artifact_filename: str = "unknown",
     dataset_expected_checksum_md5: str = "unknown",
     dataset_actual_checksum_md5: str = "unknown",
+    effective_config_hash: str | None = None,
+    extra_result_fields: dict[str, Any] | None = None,
+    extra_metadata_fields: dict[str, Any] | None = None,
 ) -> CellTrainResult:
     """TRAIN-VALIDATION MODE for one cell. Uses train_loader/val_loader
     ONLY -- never a test loader (no test-loader parameter exists on this
@@ -596,6 +635,18 @@ def run_train_validation_cell(
     `ledger_check_test_metrics`: optional callable(run_id) -> bool, used to
     enforce the "no rerun after test metrics observed" rule; if it returns
     True for this cell's run_id, refuses to proceed.
+
+    `effective_config_hash`: if given, used as this attempt's config hash
+    instead of cell_config_hash(cell) -- for Block D cells, whose identity
+    must also cover gate-decision provenance. A/B/C call sites leave this
+    None, so their hashing and behavior are completely unchanged.
+
+    `extra_result_fields`/`extra_metadata_fields`: optional dicts merged
+    into result.json/metadata.json ON TOP OF the required fields below
+    (never removing or overriding a required key) -- used by Block D to
+    persist gate provenance (selected batch, decision/benchmark/spec
+    commits, decision-artifact SHA-256) alongside the normal record. A/B/C
+    call sites leave these None, so their persisted schema is unchanged.
     """
     if cell.seed == 314159:
         raise ValueError("Refusing to train: seed 314159 is permanently excluded from confirmatory runs.")
@@ -607,17 +658,25 @@ def run_train_validation_cell(
             f"reruns after test metrics exist are never permitted."
         )
 
-    skip = check_confirmatory_skip(cell, root, amendments_ledger_path, confirmatory_ledger_path)
+    skip = check_confirmatory_skip(
+        cell,
+        root,
+        amendments_ledger_path,
+        confirmatory_ledger_path,
+        effective_config_hash=effective_config_hash,
+    )
     if skip is not None:
         return skip
-    this_hash = cell_config_hash(cell)
+    this_hash = effective_config_hash if effective_config_hash is not None else cell_config_hash(cell)
 
     # check_confirmatory_skip already ruled out a hash mismatch (it would
     # have raised ConflictingCompletedRunError above); any completed
     # attempt still on disk at this point is necessarily eligibility-
     # excluded (amendments-ledger ineligible), so a new attempt is
     # legitimately needed -- see run_identity.start_attempt() docstring.
-    attempt_dir, status = start_attempt(cell, root, allow_new_attempt_despite_matching_hash=True)
+    attempt_dir, status = start_attempt(
+        cell, root, allow_new_attempt_despite_matching_hash=True, effective_config_hash=effective_config_hash
+    )
     settings = FROZEN_TRAINING_SETTINGS
     try:
         seed_everything(cell.seed)
@@ -709,6 +768,10 @@ def run_train_validation_cell(
             "protocol_commit": protocol_commit,
             "source_commit": _git_commit_hash(),
         }
+        if extra_result_fields:
+            result_fields = {**result_fields, **extra_result_fields}
+        if extra_metadata_fields:
+            metadata_fields = {**metadata_fields, **extra_metadata_fields}
 
         persist_and_verify_completion(
             attempt_dir,
@@ -1075,6 +1138,409 @@ def verify_block_completions(
         "failed_canonical": [],  # reserved; corrupt/ambiguous cover all current failure modes
         "cells": cell_reports,
     }
+
+
+### --- Phase 2B.3F: Block D gate-authorized training -------------------- ###
+#
+# Block D (native-128px PathMNIST/BloodMNIST) is never reachable through
+# resolve_canary_run_id()/run_canary_cell()/run_block_cells() -- those
+# structurally reject it (BlockDRunRejectedError / UnsupportedBlockError),
+# and NOTHING below changes that. This section adds a SEPARATE, PARALLEL
+# entry point that is the only way to train a Block D cell, and it can
+# never proceed without first verifying the committed, tracked
+# artifacts/block_d_gate_decision.json says INCLUDED for that dataset.
+#
+# Authorization happens BEFORE: attempt allocation, attempt-directory
+# creation, ledger writing, dirty-tree acceptance, MPS initialization,
+# dataset loading, model construction, and training -- see
+# run_block_d_train_validation_cell()'s docstring for the exact order.
+#
+# No CLI flag, environment variable, or dependency-injection parameter
+# bypasses this -- every injectable parameter below (loader_factory,
+# device_resolver, dataset_verifier, git_tracked_and_clean,
+# last_commit_for_path, commit_is_ancestor) exists ONLY so tests can
+# supply synthetic/fake implementations; none of them can skip the
+# authorization CALLS themselves, which are unconditional. There is no
+# force/override flag anywhere in this section.
+
+
+class NotBlockDRunIdError(RuntimeError):
+    """Raised when a run_id resolves to an Block A/B/C cell (or does not
+    resolve at all) via resolve_block_d_run_id() -- this entry point trains
+    ONLY Block D cells."""
+
+
+class BlockDAuthorizationError(RuntimeError):
+    """Raised whenever Block D gate authorization fails, for ANY reason --
+    missing/untracked/dirty/malformed/OMITTED decision, hash/checksum
+    mismatch, non-ancestor provenance commit, or a dataset with no
+    recorded selected batch. Always raised BEFORE attempt allocation,
+    ledger writing, dirty-tree acceptance, MPS initialization, dataset
+    loading, or model construction -- see run_block_d_train_validation_cell().
+    """
+
+
+def resolve_block_d_run_id(run_id: str, matrix_path: str = "configs/experiment_matrix.yaml") -> MatrixCell:
+    """Resolve run_id to EXACTLY one Block D matrix cell. Rejects pilot/
+    excluded-seed IDs (before any matrix parsing, mirroring
+    resolve_canary_run_id()), any A/B/C run_id (NotBlockDRunIdError,
+    distinct from "unknown"), and anything not present in the matrix."""
+    if "-s314159" in run_id or run_id.startswith("pilot"):
+        raise PilotOrExcludedSeedRunIdError(
+            f"Refusing run_id '{run_id}': pilot/permanently-excluded-seed identifiers "
+            f"are never valid confirmatory targets."
+        )
+    full = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    for cell in full.cells:
+        if cell.run_id() == run_id:
+            if cell.block != "D_conditional_128px":
+                raise NotBlockDRunIdError(
+                    f"Run '{run_id}' belongs to block '{cell.block}', not Block D -- "
+                    f"use resolve_canary_run_id()/run_canary_cell() for Block A/B/C instead."
+                )
+            return cell
+    raise UnknownRunIdError(f"'{run_id}' does not match any Block D matrix cell.")
+
+
+@dataclass(frozen=True)
+class BlockDEffectiveConfig:
+    """Everything that determines a Block D attempt's true identity: the
+    frozen matrix cell PLUS the gate-decision provenance that authorized
+    training it. Two attempts of the "same" cell trained under a
+    DIFFERENT gate decision (different selected batch, different decision
+    commit, etc.) are NOT the same attempt as far as config hashing is
+    concerned -- see compute_block_d_effective_config_hash()."""
+
+    cell: MatrixCell
+    selected_batch_size: int
+    decision_artifact_sha256: str
+    gate_decision_commit: str
+    benchmark_source_commit: str
+    benchmark_spec_commit: str
+    protocol_commit: str
+    matrix_hash: str
+    dataset_checksum_md5: str
+    native_resolution: int = 128
+    resized: bool = False
+
+
+def compute_block_d_effective_config_hash(effective_config: BlockDEffectiveConfig) -> str:
+    """Config hash for a Block D cell, covering the same (cell +
+    FROZEN_TRAINING_SETTINGS) payload cell_config_hash() uses for A/B/C
+    PLUS full gate-decision provenance. Does NOT alter cell_config_hash()
+    itself or any A/B/C call site."""
+    payload = {
+        "cell": asdict(effective_config.cell),
+        "training_settings": asdict(FROZEN_TRAINING_SETTINGS),
+        "block_d_gate": {
+            "selected_batch_size": effective_config.selected_batch_size,
+            "decision_artifact_sha256": effective_config.decision_artifact_sha256,
+            "gate_decision_commit": effective_config.gate_decision_commit,
+            "benchmark_source_commit": effective_config.benchmark_source_commit,
+            "benchmark_spec_commit": effective_config.benchmark_spec_commit,
+            "protocol_commit": effective_config.protocol_commit,
+            "matrix_hash": effective_config.matrix_hash,
+            "dataset_checksum_md5": effective_config.dataset_checksum_md5,
+            "native_resolution": effective_config.native_resolution,
+            "resized": effective_config.resized,
+        },
+    }
+    from when_tta_hurts.config import config_hash as _config_hash
+
+    return _config_hash(payload)
+
+
+def default_block_d_train_validation_loader_factory(
+    cell: MatrixCell, batch_size: int, root: str | Path = DEFAULT_DATA_ROOT
+) -> TrainValidationLoaders:
+    """PRODUCTION Block D data-loading path -- structurally identical to
+    default_train_validation_loader_factory() except the batch size is the
+    gate-authorized SELECTED batch (never FROZEN_TRAINING_SETTINGS'
+    28/64px default), and it is only ever called AFTER authorization has
+    already verified the official checksum matches the gate decision's
+    recorded checksum. Still independently re-verifies the checksum itself
+    (fails closed on a missing/corrupt/resized artifact) before
+    constructing any DataLoader -- never accepts a resized proxy, and
+    load_pilot_split() has no test-split access mechanism of any kind."""
+    verification = verify_official_dataset_artifact(cell.dataset, cell.resolution, root=root)
+    train_ds = load_pilot_split(cell.dataset, split="train", size=cell.resolution, root=str(root))
+    val_ds = load_pilot_split(cell.dataset, split="val", size=cell.resolution, root=str(root))
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    return TrainValidationLoaders(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        dataset_artifact_filename=Path(verification.artifact_path).name,
+        dataset_expected_checksum_md5=verification.expected_checksum_md5,
+        dataset_actual_checksum_md5=verification.actual_checksum_md5,
+    )
+
+
+def _default_last_commit_for_path(path: Path) -> str | None:
+    """The most recent commit that touched `path` in the current repository
+    history, or None if `path` has never been committed."""
+    try:
+        out = subprocess.check_output(["git", "log", "-1", "--format=%H", "--", str(path)], text=True).strip()
+    except subprocess.CalledProcessError:
+        return None
+    return out or None
+
+
+def _default_commit_is_ancestor(commit: str, head: str) -> bool:
+    """True iff `commit` is an ancestor of (or equal to) `head` in the
+    current repository history."""
+    try:
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, head],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def authorize_block_d_cell(
+    cell: MatrixCell,
+    decision_path: str | Path = _BLOCK_D_DEFAULT_DECISION_PATH,
+    expected_matrix_hash: str | None = None,
+    expected_protocol_commit: str = _BLOCK_D_FROZEN_PROTOCOL_COMMIT,
+    expected_spec_commit: str = _BLOCK_D_SPEC_COMMIT,
+    expected_batch_size: int | None = None,
+    matrix_path: str = "configs/experiment_matrix.yaml",
+    git_tracked_and_clean=_default_git_tracked_and_clean,
+    last_commit_for_path=_default_last_commit_for_path,
+    commit_is_ancestor=_default_commit_is_ancestor,
+    head_commit: str | None = None,
+) -> tuple[dict[str, Any], BlockDEffectiveConfig]:
+    """Verify Block D training is authorized for `cell` and derive its
+    effective configuration. Raises BlockDAuthorizationError (wrapping the
+    underlying cause) if ANY of the following hold:
+
+    - the decision is missing, untracked, dirty, or malformed (delegated
+      to load_and_verify_block_d_decision(), require_git_tracked=True,
+      raw_output_path=None -- the raw benchmark file need not be present)
+    - the decision is not INCLUDED
+    - the decision's matrix/protocol/specification hashes don't match the
+      currently-frozen matrix/protocol/spec
+    - the decision has never been committed (no commit in history touches
+      decision_path)
+    - the gate-decision commit, benchmark source commit, or benchmark
+      spec commit is not an ancestor of the current HEAD (current HEAD is
+      NOT required to equal any of them -- later audited engineering
+      commits are fine)
+    - `cell.dataset` has no valid (positive int) selected_batch_size
+      recorded in the decision
+    - `expected_batch_size` is given and differs from the recorded
+      selected batch (defense-in-depth self-consistency check; the
+      decision's own recorded batch is always what training actually
+      uses, regardless of whether this optional check is exercised)
+
+    Does NOT touch MPS, the real dataset artifact, or attempt/ledger state
+    -- purely decision-file + git-history verification.
+    """
+    expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    matrix_hash = expected_matrix_hash if expected_matrix_hash is not None else expanded.source_config_hash
+
+    try:
+        decision = load_and_verify_block_d_decision(
+            decision_path,
+            expected_matrix_hash=matrix_hash,
+            expected_protocol_commit=expected_protocol_commit,
+            expected_spec_commit=expected_spec_commit,
+            dataset=cell.dataset,
+            requested_batch_size=expected_batch_size,
+            require_git_tracked=True,
+            git_tracked_and_clean=git_tracked_and_clean,
+            raw_output_path=None,
+        )
+    except BlockDDecisionError as e:
+        raise BlockDAuthorizationError(f"Block D authorization failed for {cell.run_id()}: {e}") from e
+
+    decision_path = Path(decision_path)
+    head = head_commit if head_commit is not None else _git_commit_hash()
+
+    gate_decision_commit = last_commit_for_path(decision_path)
+    if gate_decision_commit is None:
+        raise BlockDAuthorizationError(
+            f"Block D authorization failed for {cell.run_id()}: {decision_path} has no commit in "
+            f"repository history -- refusing to trust a decision that was never committed."
+        )
+
+    for label, commit in (
+        ("gate-decision", gate_decision_commit),
+        ("benchmark source", decision.get("source_commit")),
+        ("benchmark spec", decision.get("spec_commit")),
+    ):
+        if not commit or not commit_is_ancestor(commit, head):
+            raise BlockDAuthorizationError(
+                f"Block D authorization failed for {cell.run_id()}: {label} commit "
+                f"'{commit}' is not an ancestor of current HEAD '{head}'."
+            )
+
+    dataset_provenance = decision.get("per_dataset", {}).get(cell.dataset)
+    selected_batch = dataset_provenance.get("selected_batch_size") if dataset_provenance else None
+    if not isinstance(selected_batch, int) or selected_batch <= 0:
+        raise BlockDAuthorizationError(
+            f"Block D authorization failed for {cell.run_id()}: no valid selected_batch_size "
+            f"recorded for dataset '{cell.dataset}' in the gate decision."
+        )
+
+    decision_sha256 = _sha256_file(decision_path)
+
+    effective_config = BlockDEffectiveConfig(
+        cell=cell,
+        selected_batch_size=selected_batch,
+        decision_artifact_sha256=decision_sha256,
+        gate_decision_commit=gate_decision_commit,
+        benchmark_source_commit=decision["source_commit"],
+        benchmark_spec_commit=decision["spec_commit"],
+        protocol_commit=decision["protocol_commit"],
+        matrix_hash=decision["matrix_hash"],
+        dataset_checksum_md5=dataset_provenance["checksum_actual"],
+        native_resolution=128,
+        resized=False,
+    )
+    return decision, effective_config
+
+
+def run_block_d_train_validation_cell(
+    run_id: str,
+    matrix_path: str = "configs/experiment_matrix.yaml",
+    decision_path: str | Path = _BLOCK_D_DEFAULT_DECISION_PATH,
+    loader_factory: Callable[[MatrixCell, int, str | Path], TrainValidationLoaders] = (
+        default_block_d_train_validation_loader_factory
+    ),
+    dataset_verifier: Callable[
+        [str, int, str | Path], ArtifactVerification
+    ] = verify_official_dataset_artifact,
+    device_resolver: Callable[[], torch.device] = lambda: select_device("mps"),
+    require_clean_tree: bool = True,
+    root: str = "artifacts/confirmatory",
+    data_root: str | Path = DEFAULT_DATA_ROOT,
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
+    expected_batch_size: int | None = None,
+    git_tracked_and_clean=_default_git_tracked_and_clean,
+    last_commit_for_path=_default_last_commit_for_path,
+    commit_is_ancestor=_default_commit_is_ancestor,
+) -> CellTrainResult:
+    """Single entry point for Block D gate-authorized training. Enforces,
+    IN ORDER:
+
+    1. run_id resolves to exactly one Block D matrix cell
+       (resolve_block_d_run_id()).
+    2. The committed gate decision is loaded and verified
+       (authorize_block_d_cell() -- see its docstring for the full list of
+       hard-fail conditions). NOTHING past this point is reachable if
+       authorization fails.
+    3. The effective Block D configuration (cell + gate provenance) and
+       its hash are derived (authorize_block_d_cell()).
+    4. A canonical-eligible matching completion is checked
+       (check_confirmatory_skip(), keyed on the EFFECTIVE hash -- so an
+       existing completion under a now-superseded gate decision is never
+       silently treated as still valid; see check_confirmatory_skip()'s
+       docstring). If found, returned as an IMMEDIATE skip -- before the
+       working-tree check, MPS initialization, checksum verification,
+       dataset loading, DataLoader construction, model construction,
+       attempt-directory creation, or any ledger append.
+    5. Only if execution is actually needed: working tree is clean
+       (require_clean_working_tree(), skippable only for injected tests).
+    6. Device resolves to MPS with NO silent CPU fallback
+       (device_resolver defaults to select_device('mps')).
+    7. The official native dataset artifact is independently re-verified
+       (dataset_verifier) and its checksum/resized flag are compared
+       against the gate decision's recorded values -- a dataset that
+       changed on disk since the gate ran, or that is no longer native,
+       hard-fails here even though authorize_block_d_cell() already
+       passed.
+    8. loader_factory(cell, selected_batch, data_root) constructs
+       train/validation DataLoaders at the gate-selected batch size.
+    9-11. run_train_validation_cell() constructs the model, trains
+       (max_training_seconds bounded by the frozen 90-minute per-run
+       training limit, and inheriting its existing OOM/non-finite/
+       interruption handling unchanged), persists/verifies artifacts
+       (with Block D gate provenance merged into result.json/
+       metadata.json), and appends the terminal confirmatory-ledger row
+       (with the EFFECTIVE config hash).
+
+    A failed authorization (steps 1-3) creates ZERO files and ZERO ledger
+    rows -- it raises before any of run_identity.start_attempt(),
+    require_clean_working_tree(), device_resolver(), loader_factory(), or
+    ledger append are ever called.
+    """
+    cell = resolve_block_d_run_id(run_id, matrix_path)
+
+    decision, effective_config = authorize_block_d_cell(
+        cell,
+        decision_path=decision_path,
+        matrix_path=matrix_path,
+        expected_batch_size=expected_batch_size,
+        git_tracked_and_clean=git_tracked_and_clean,
+        last_commit_for_path=last_commit_for_path,
+        commit_is_ancestor=commit_is_ancestor,
+    )
+    effective_hash = compute_block_d_effective_config_hash(effective_config)
+
+    skip = check_confirmatory_skip(
+        cell, root, amendments_ledger_path, confirmatory_ledger_path, effective_config_hash=effective_hash
+    )
+    if skip is not None:
+        return skip
+
+    if require_clean_tree:
+        require_clean_working_tree()
+    device = device_resolver()
+
+    verification = dataset_verifier(cell.dataset, cell.resolution, data_root)
+    if verification.resized is not False:
+        raise BlockDAuthorizationError(
+            f"Block D authorization failed for {run_id}: dataset artifact reports "
+            f"resized={verification.resized!r}, not exactly False."
+        )
+    if verification.actual_checksum_md5 != effective_config.dataset_checksum_md5:
+        raise BlockDAuthorizationError(
+            f"Block D authorization failed for {run_id}: current dataset checksum "
+            f"'{verification.actual_checksum_md5}' differs from the gate decision's recorded "
+            f"checksum '{effective_config.dataset_checksum_md5}' -- the artifact changed since "
+            f"the gate ran."
+        )
+
+    bundle = loader_factory(cell, effective_config.selected_batch_size, data_root)
+
+    gate_provenance = {
+        "block_d_gate_decision_path": str(decision_path),
+        "block_d_gate_decision_sha256": effective_config.decision_artifact_sha256,
+        "block_d_gate_decision_commit": effective_config.gate_decision_commit,
+        "block_d_benchmark_source_commit": effective_config.benchmark_source_commit,
+        "block_d_benchmark_spec_commit": effective_config.benchmark_spec_commit,
+        "block_d_selected_batch_size": effective_config.selected_batch_size,
+        "block_d_native_resolution": effective_config.native_resolution,
+        "block_d_resized": effective_config.resized,
+        "block_d_gate_final_decision": decision["final_decision"],
+    }
+
+    return run_train_validation_cell(
+        cell,
+        bundle.train_loader,
+        bundle.val_loader,
+        device,
+        root=root,
+        max_training_seconds=_BLOCK_D_MAX_TRAINING_MINUTES_PER_RUN * 60,
+        confirmatory_ledger_path=confirmatory_ledger_path,
+        amendments_ledger_path=amendments_ledger_path,
+        matrix_path=matrix_path,
+        dataset_artifact_filename=bundle.dataset_artifact_filename,
+        dataset_expected_checksum_md5=bundle.dataset_expected_checksum_md5,
+        dataset_actual_checksum_md5=bundle.dataset_actual_checksum_md5,
+        effective_config_hash=effective_hash,
+        extra_result_fields={"block_d_gate_provenance": gate_provenance},
+        extra_metadata_fields={"block_d_gate_provenance": gate_provenance},
+    )
+
+
+### --- end Phase 2B.3F section ------------------------------------------ ###
 
 
 def run_final_test(authorization_artifact_path: str = "configs/final_evaluation_authorization.yaml") -> None:

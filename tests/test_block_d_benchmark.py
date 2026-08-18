@@ -858,15 +858,24 @@ def test_decision_gate_condition_booleans_present_per_dataset(monkeypatch, tmp_p
     assert "binding_total_within_24_hours" in booleans
 
 
-def test_decision_loader_not_wired_into_any_training_entry_point():
-    """Confirm this task did not unlock Block D training: orchestrator.py's
-    block-execution entry points must not reference the decision loader."""
+def test_decision_loader_wired_only_into_dedicated_block_d_path():
+    """Phase 2B.3F wires load_and_verify_block_d_decision() into
+    orchestrator.py's DEDICATED Block D entry point
+    (authorize_block_d_cell/run_block_d_train_validation_cell) only --
+    the pre-existing Block A/B/C entry points
+    (resolve_canary_run_id/run_canary_cell/run_block_cells) must never
+    reference it, since those remain structurally Block-D-rejecting."""
     import inspect
 
     from when_tta_hurts import orchestrator
 
-    orchestrator_source = inspect.getsource(orchestrator)
-    assert "load_and_verify_block_d_decision" not in orchestrator_source
+    assert "load_and_verify_block_d_decision" in inspect.getsource(orchestrator.authorize_block_d_cell)
+    for fn in (
+        orchestrator.resolve_canary_run_id,
+        orchestrator.run_canary_cell,
+        orchestrator.run_block_cells,
+    ):
+        assert "load_and_verify_block_d_decision" not in inspect.getsource(fn)
 
 
 # ---------------------------------------------------------------------------

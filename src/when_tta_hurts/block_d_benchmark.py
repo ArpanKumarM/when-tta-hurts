@@ -687,6 +687,57 @@ def _find_forbidden_scientific_term(serializable: Any) -> str | None:
     return None
 
 
+# Exact (normalized: lowercased, non-alphanumeric stripped) forbidden FIELD
+# NAMES -- checked recursively over every dict key in a decision/output,
+# independent of _find_forbidden_scientific_term's whole-document value/key
+# word-boundary scan. This catches plural/compound key-name variants (e.g.
+# 'predictions', 'f1_score') that a word-boundary match on 'prediction'/'f1'
+# alone would miss, without flagging unrelated legitimate field names that
+# merely contain a similar-looking substring (e.g. 'test_metrics_observed',
+# an existing, legitimate boolean ledger field unrelated to any metric
+# value) since this checks NORMALIZED EXACT membership, not substrings.
+_FORBIDDEN_FIELD_NAME_TOKENS = frozenset(
+    {
+        "accuracy",
+        "accuracies",
+        "prediction",
+        "predictions",
+        "f1",
+        "f1score",
+        "nll",
+        "ece",
+        "brier",
+        "brierscore",
+        "ttadelta",
+        "testmetric",
+        "testmetrics",
+    }
+)
+
+
+def _normalize_field_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _find_forbidden_field_name(obj: Any) -> str | None:
+    """Recursively walk `obj` (dicts and lists only -- JSON has no other
+    container types) and return the first dict key whose normalized form
+    exactly matches a forbidden field name, or None if none is found."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and _normalize_field_name(key) in _FORBIDDEN_FIELD_NAME_TOKENS:
+                return key
+            found = _find_forbidden_field_name(value)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_forbidden_field_name(item)
+            if found is not None:
+                return found
+    return None
+
+
 def _validate_output_schema(output: dict[str, Any]) -> None:
     required_top = {
         "schema_version",
@@ -707,6 +758,11 @@ def _validate_output_schema(output: dict[str, Any]) -> None:
         raise IncompleteBenchmarkResultError(
             f"Benchmark output contains forbidden scientific-metric term '{term}' -- "
             f"this schema must never carry accuracy/prediction/TTA fields."
+        )
+    field = _find_forbidden_field_name(output)
+    if field is not None:
+        raise IncompleteBenchmarkResultError(
+            f"Benchmark output contains forbidden scientific-metric field name '{field}'."
         )
 
 
@@ -829,6 +885,11 @@ def _validate_decision_schema(decision: dict[str, Any]) -> None:
     if term is not None:
         raise IncompleteBenchmarkResultError(
             f"Block D gate decision contains forbidden scientific-metric term '{term}'."
+        )
+    field = _find_forbidden_field_name(decision)
+    if field is not None:
+        raise IncompleteBenchmarkResultError(
+            f"Block D gate decision contains forbidden scientific-metric field name '{field}'."
         )
 
 

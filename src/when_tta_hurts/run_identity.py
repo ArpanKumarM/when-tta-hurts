@@ -177,6 +177,7 @@ def start_attempt(
     cell: MatrixCell,
     root: str | Path = DEFAULT_CONFIRMATORY_ROOT,
     allow_new_attempt_despite_matching_hash: bool = False,
+    effective_config_hash: str | None = None,
 ) -> tuple[Path, AttemptStatus]:
     """Begin a new attempt for `cell`. Raises:
     - ConflictingCompletedRunError if a completed attempt exists with a
@@ -193,8 +194,16 @@ def start_attempt(
     passes only when it has already determined (via an eligibility overlay
     -- see ledger.py's amendments ledger) that the existing matching-hash
     completed attempt is canonical-ineligible and a new attempt is
-    therefore legitimately needed (Phase 2B.3A Part 2B)."""
-    this_hash = cell_config_hash(cell)
+    therefore legitimately needed (Phase 2B.3A Part 2B).
+
+    `effective_config_hash`: if given, used INSTEAD of cell_config_hash(cell)
+    as this attempt's stored config hash -- for Block D cells, whose
+    identity must also cover gate-decision provenance (selected batch,
+    decision/benchmark/spec commits, dataset checksum -- see
+    orchestrator.py::compute_block_d_effective_config_hash()). Every A/B/C
+    call site leaves this None, so their hashing is completely unchanged.
+    """
+    this_hash = effective_config_hash if effective_config_hash is not None else cell_config_hash(cell)
     existing_completed = find_completed_attempt(cell, root)
     if existing_completed is not None:
         if existing_completed["config_hash"] != this_hash:
