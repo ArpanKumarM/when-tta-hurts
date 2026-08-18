@@ -57,9 +57,14 @@ def _make_loader(n, num_classes=9, batch_size=8, seed=0):
 
 
 def _run(cell, tmp_path, ledger_path, **kwargs):
+    # A_CELL below intentionally shares its run_id with the real Phase
+    # 2B.3A canary cell, so the amendments ledger must also be pinned to a
+    # temp path -- otherwise the real (correctly ineligible) attempt_001
+    # amendment would leak into these synthetic tests.
     device = torch.device("cpu")
     train_loader = _make_loader(16, batch_size=8)
     val_loader = _make_loader(8, batch_size=8)
+    kwargs.setdefault("amendments_ledger_path", tmp_path / "ledger_amendments.csv")
     return orch.run_train_validation_cell(
         cell,
         train_loader,

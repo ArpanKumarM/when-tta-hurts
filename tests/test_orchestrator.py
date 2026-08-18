@@ -25,12 +25,16 @@ from when_tta_hurts.run_identity import ConflictingCompletedRunError
 
 
 def _run_cell(cell, train_loader, val_loader, device, **kwargs):
-    """Wrapper forcing EVERY call in this file onto a temporary
-    confirmatory ledger derived from `root` -- never
-    artifacts/ledger_confirmatory.csv."""
+    """Wrapper forcing EVERY call in this file onto temporary confirmatory
+    AND amendments ledgers derived from `root` -- never
+    artifacts/ledger_confirmatory.csv or artifacts/ledger_amendments.csv.
+    (A_CELL below intentionally shares its run_id with the real Phase
+    2B.3A canary cell, so touching the real amendments ledger would leak
+    that cell's real eligibility state into these synthetic tests.)"""
     from pathlib import Path
 
     kwargs.setdefault("confirmatory_ledger_path", Path(kwargs["root"]) / "ledger_confirmatory.csv")
+    kwargs.setdefault("amendments_ledger_path", Path(kwargs["root"]) / "ledger_amendments.csv")
     return run_train_validation_cell(cell, train_loader, val_loader, device, **kwargs)
 
 

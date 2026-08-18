@@ -366,15 +366,45 @@ def append_amendment_entry(
     return "appended"
 
 
+class LedgerSchemaError(RuntimeError):
+    """Raised when a ledger row contains a malformed value for a field
+    that must be strictly boolean (e.g. canonical_eligible). Fails
+    closed -- never silently defaults to eligible or ineligible."""
+
+
+def _parse_canonical_bool(value: str | None, *, context: str) -> bool:
+    """Strict, case-insensitive boolean parsing for ledger CSV fields.
+    Accepts only 'true'/'false' (any capitalization, with surrounding
+    whitespace stripped). Anything else -- missing, empty, or any other
+    token -- is a hard failure, never a silent default."""
+    if value is None:
+        raise LedgerSchemaError(f"{context}: missing required boolean field.")
+    token = value.strip().lower()
+    if token == "true":
+        return True
+    if token == "false":
+        return False
+    raise LedgerSchemaError(f"{context}: expected 'true' or 'false' (case-insensitive), got {value!r}.")
+
+
 def is_canonical_ineligible(
     run_id: str, attempt_id: int, ledger_path: str | Path = AMENDMENTS_LEDGER_PATH
 ) -> bool:
     """True iff the amendments ledger has a row for (run_id, attempt_id)
     with canonical_eligible == False. A completed attempt with NO
     amendment row is eligible by default (amendments are opt-in
-    exceptions, not a default-deny allowlist)."""
+    exceptions, not a default-deny allowlist). Raises LedgerSchemaError
+    (fails closed -- never permits silent execution or silent skip) if a
+    matching row's canonical_eligible field is not a valid boolean token."""
     for row in _read_existing_rows(ledger_path):
         if row.get("run_id") == run_id and row.get("attempt_id") == str(attempt_id):
-            if row.get("canonical_eligible") == "False":
+            eligible = _parse_canonical_bool(
+                row.get("canonical_eligible"),
+                context=(
+                    f"amendments ledger row (run_id={run_id}, attempt_id={attempt_id}), "
+                    f"field 'canonical_eligible'"
+                ),
+            )
+            if not eligible:
                 return True
     return False
