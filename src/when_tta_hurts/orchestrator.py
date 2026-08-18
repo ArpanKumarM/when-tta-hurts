@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader
 
 from when_tta_hurts import ledger as ledger_module
 from when_tta_hurts.authorization import verify_authorization
-from when_tta_hurts.data import load_pilot_split
+from when_tta_hurts.data import get_dataset_metadata, load_pilot_split
 from when_tta_hurts.dataset_verification import DEFAULT_DATA_ROOT, verify_official_dataset_artifact
 from when_tta_hurts.devices import select_device
 from when_tta_hurts.matrix import FROZEN_TRAINING_SETTINGS, MatrixCell, parse_and_validate_matrix
@@ -274,10 +274,16 @@ def unmatched_comparison_cell_for(block_b_cell: MatrixCell) -> MatrixCell:
 
 
 def _build_model(cell: MatrixCell) -> torch.nn.Module:
+    """num_classes is always derived from the dataset's own registered
+    metadata (data.py::get_dataset_metadata(), backed by medmnist.INFO's
+    label dict) -- NEVER hardcoded. PathMNIST=9, BloodMNIST=8,
+    DermaMNIST=7. get_dataset_metadata() itself hard-fails for any
+    unregistered dataset name before this function returns anything."""
+    num_classes = get_dataset_metadata(cell.dataset).n_classes
     if cell.model == "small_cnn":
-        return build_small_cnn(num_classes=9, normalization=cell.normalization)
+        return build_small_cnn(num_classes=num_classes, normalization=cell.normalization)
     if cell.model == "resnet18":
-        return build_resnet18_small_input(num_classes=9)
+        return build_resnet18_small_input(num_classes=num_classes)
     raise ValueError(f"Unknown model '{cell.model}'")
 
 
