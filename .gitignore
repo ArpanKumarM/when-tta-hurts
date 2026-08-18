@@ -18,6 +18,7 @@ artifacts/*
 !artifacts/ledger.csv
 !artifacts/ledger_incidents.csv
 !artifacts/ledger_confirmatory.csv
+!artifacts/ledger_amendments.csv
 
 # Python
 __pycache__/
