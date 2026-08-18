@@ -27,6 +27,7 @@ from when_tta_hurts import ledger as ledger_module
 from when_tta_hurts.authorization import verify_authorization
 from when_tta_hurts.data import load_pilot_split
 from when_tta_hurts.dataset_verification import DEFAULT_DATA_ROOT, verify_official_dataset_artifact
+from when_tta_hurts.devices import select_device
 from when_tta_hurts.matrix import FROZEN_TRAINING_SETTINGS, MatrixCell, parse_and_validate_matrix
 from when_tta_hurts.models.resnet import build_resnet18_small_input
 from when_tta_hurts.models.small_cnn import build_small_cnn
@@ -62,6 +63,72 @@ class UnfavorableRerunRefusedError(RuntimeError):
     """Raised if a rerun is requested for a run_id whose confirmatory
     ledger already shows test_metrics_observed=True -- reruns after test
     metrics exist are never permitted, regardless of the stated reason."""
+
+
+class UnknownRunIdError(RuntimeError):
+    """Raised when a --run-id does not match any cell in the approved
+    unconditional (Block A/B/C) matrix expansion -- covers genuinely
+    unknown IDs as well as any malformed/hand-edited ID that happens not
+    to collide with a real cell."""
+
+
+class BlockDRunRejectedError(RuntimeError):
+    """Raised when a --run-id resolves to a Block D (conditional, 128px)
+    cell. Block D requires its own gate evaluation (block_d_gate.py) and
+    is never authorized for single-cell canary/production execution via
+    this path -- Phase 2B.3A explicitly excludes Block D."""
+
+
+class PilotOrExcludedSeedRunIdError(RuntimeError):
+    """Raised immediately, before any matrix lookup, when a --run-id
+    references the permanently-excluded pilot seed (314159) or otherwise
+    looks like a pilot identifier -- these can never be valid confirmatory
+    targets regardless of what the matrix contains."""
+
+
+class DirtyWorkingTreeError(RuntimeError):
+    """Raised when the working tree is not clean at canary-execution time
+    -- training must never run against an uncommitted/uncertain code
+    state, so this is checked before any dataset access."""
+
+
+def _git_status_porcelain() -> str:
+    return subprocess.check_output(["git", "status", "--porcelain"], text=True)
+
+
+def require_clean_working_tree() -> None:
+    status = _git_status_porcelain()
+    if status.strip():
+        raise DirtyWorkingTreeError(
+            f"Refusing to execute against a dirty working tree. `git status --porcelain` output:\n{status}"
+        )
+
+
+def resolve_canary_run_id(run_id: str, matrix_path: str = "configs/experiment_matrix.yaml") -> MatrixCell:
+    """Resolve EXACTLY one --run-id to its approved unconditional (Block
+    A/B/C) matrix cell. Rejects: pilot/permanently-excluded-seed IDs
+    (before any matrix parsing), Block D IDs (explicitly, with a distinct
+    error from "unknown"), and anything not present in the committed
+    matrix expansion. Never matches more than one cell (run IDs are
+    unique by construction -- see matrix.py::MatrixCell.run_id())."""
+    if "-s314159" in run_id or run_id.startswith("pilot"):
+        raise PilotOrExcludedSeedRunIdError(
+            f"Refusing run_id '{run_id}': pilot/permanently-excluded-seed identifiers "
+            f"are never valid confirmatory targets."
+        )
+    full = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    for cell in full.cells:
+        if cell.run_id() == run_id:
+            if cell.block == "D_conditional_128px":
+                raise BlockDRunRejectedError(
+                    f"Run '{run_id}' belongs to Block D, which is not authorized for "
+                    f"single-cell canary execution -- Block D requires its own gate "
+                    f"evaluation and is out of scope for Phase 2B.3A."
+                )
+            return cell
+    raise UnknownRunIdError(
+        f"'{run_id}' does not match any approved unconditional (Block A/B/C) matrix cell."
+    )
 
 
 class FinalTestNotYetImplementedError(RuntimeError):
@@ -333,6 +400,48 @@ def _append_failed_confirmatory_row(
         failure_reason=failure_reason,
         validation_metrics_observed=False,
         test_metrics_observed=False,
+    )
+
+
+def run_canary_cell(
+    run_id: str,
+    matrix_path: str = "configs/experiment_matrix.yaml",
+    loader_factory: DataLoaderFactory = default_train_validation_loader_factory,
+    device_resolver: Callable[[], torch.device] = lambda: select_device("mps"),
+    require_clean_tree: bool = True,
+    root: str = "artifacts/confirmatory",
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+) -> CellTrainResult:
+    """Single entry point for the Phase 2B.3A canary CLI path (and its
+    tests). Enforces, IN ORDER, before any dataset access or artifact
+    creation:
+    1. run_id resolves to exactly one approved unconditional A/B/C cell
+       (rejects pilot/excluded-seed IDs, Block D IDs, and unknown IDs --
+       see resolve_canary_run_id()).
+    2. Working tree is clean (skippable only for injected tests that don't
+       care about repo state, via require_clean_tree=False).
+    3. Device resolves to MPS with NO silent CPU fallback (device_resolver
+       defaults to select_device('mps'), which raises DeviceUnavailableError
+       rather than substituting CPU).
+
+    Only after all three checks pass does it call loader_factory(cell) --
+    which performs official-checksum verification before constructing any
+    DataLoader -- and then run_train_validation_cell(). Tests inject a
+    synthetic loader_factory and a CPU device_resolver; production code
+    (scripts/run_confirmatory.py) uses the real defaults.
+    """
+    cell = resolve_canary_run_id(run_id, matrix_path)
+    if require_clean_tree:
+        require_clean_working_tree()
+    device = device_resolver()
+    train_loader, val_loader = loader_factory(cell)
+    return run_train_validation_cell(
+        cell,
+        train_loader,
+        val_loader,
+        device,
+        root=root,
+        confirmatory_ledger_path=confirmatory_ledger_path,
     )
 
 
