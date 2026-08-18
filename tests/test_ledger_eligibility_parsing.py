@@ -133,7 +133,20 @@ def test_real_amendment_row_now_correctly_reports_ineligible():
     assert is_canonical_ineligible(RUN_ID, 1, AMENDMENTS_LEDGER_PATH) is True
 
 
-def test_real_attempt_001_no_longer_triggers_completed_run_skip():
+def test_real_attempt_001_alone_would_not_trigger_completed_run_skip():
+    """attempt_001 in isolation must never trigger a skip -- verified
+    directly against is_canonical_ineligible rather than the full
+    check_confirmatory_skip (which, against the real repo state, now
+    correctly selects the later canonical attempt_003 -- see
+    test_real_canonical_selection_finds_attempt_3 below)."""
+    assert is_canonical_ineligible(RUN_ID, 1, AMENDMENTS_LEDGER_PATH) is True
+
+
+def test_real_canonical_selection_finds_attempt_3():
+    """Against the real repo state (attempt_001 ineligible, attempt_002
+    failed, attempt_003 canonical, attempt_004 ineligible),
+    check_confirmatory_skip must select attempt_003 -- not attempt_001,
+    and not raise ambiguity."""
     from when_tta_hurts.matrix import parse_and_validate_matrix
     from when_tta_hurts.orchestrator import check_confirmatory_skip
 
@@ -141,7 +154,9 @@ def test_real_attempt_001_no_longer_triggers_completed_run_skip():
     cell = expanded.cells[0]
     assert cell.run_id() == RUN_ID
     skip = check_confirmatory_skip(cell, "artifacts/confirmatory", AMENDMENTS_LEDGER_PATH)
-    assert skip is None  # must NOT skip -- attempt_001 is ineligible
+    assert skip is not None
+    assert skip.status == "skipped_completed"
+    assert skip.attempt_number == 3
 
 
 def test_real_next_attempt_number_exceeds_ineligible_attempt_001():

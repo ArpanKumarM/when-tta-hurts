@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,13 +33,18 @@ from when_tta_hurts.matrix import FROZEN_TRAINING_SETTINGS, MatrixCell, parse_an
 from when_tta_hurts.models.resnet import build_resnet18_small_input
 from when_tta_hurts.models.small_cnn import build_small_cnn
 from when_tta_hurts.reproducibility import seed_everything
-from when_tta_hurts.result_artifacts import PersistenceVerificationError, persist_and_verify_completion
+from when_tta_hurts.result_artifacts import (
+    PersistenceVerificationError,
+    persist_and_verify_completion,
+    verify_artifact_manifest,
+)
 from when_tta_hurts.run_identity import (
     ConflictingCompletedRunError,
     RunStatus,
     cell_config_hash,
-    find_completed_attempt,
     finish_attempt,
+    list_attempts,
+    run_directory,
     start_attempt,
 )
 from when_tta_hurts.training import EarlyStoppingConfig, TrainingOOMError, train_model
@@ -94,6 +100,14 @@ class PilotOrExcludedSeedRunIdError(RuntimeError):
     references the permanently-excluded pilot seed (314159) or otherwise
     looks like a pilot identifier -- these can never be valid confirmatory
     targets regardless of what the matrix contains."""
+
+
+class AmbiguousCanonicalCompletionError(RuntimeError):
+    """Raised when more than one completed, canonical-eligible, matching-
+    config-hash, artifact-valid attempt exists for the same run ID.
+    Selection must NEVER silently pick earliest/latest/best in this case
+    -- it is always a hard failure requiring manual/amendment-ledger
+    resolution."""
 
 
 class DirtyWorkingTreeError(RuntimeError):
@@ -328,38 +342,84 @@ def check_confirmatory_skip(
     root: str | Path = "artifacts/confirmatory",
     amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
 ) -> CellTrainResult | None:
-    """Part 2C skip-ordering fix: determine whether a canonical-eligible
-    matching completion already exists, WITHOUT touching MPS, checksums,
-    datasets, DataLoaders, models, or ledger append -- this function only
-    reads run_identity's status.json files and the (small, local)
-    amendments ledger.
+    """Determine whether a canonical-eligible matching completion already
+    exists, WITHOUT touching MPS, checksums, datasets, DataLoaders,
+    models, or ledger append -- this function only reads run_identity's
+    status.json files, artifact_manifest.json files, and the (small,
+    local) amendments ledger.
 
-    Returns a CellTrainResult(status="skipped_completed", ...) if an
-    eligible match exists (skip immediately). Returns None if execution is
-    needed -- either because no completed attempt exists, or because the
-    only completed attempt(s) are marked canonical-ineligible in the
-    amendments ledger (in which case they do NOT block a new attempt).
-    Raises ConflictingCompletedRunError if a completed attempt exists with
-    a DIFFERENT config hash (protocol drift -- always a hard failure,
-    regardless of eligibility).
+    Considers EVERY attempt for this run ID, in numeric order (not just
+    the first) -- see list_attempts(). This matters because an early
+    attempt can be completed-but-canonical-ineligible (e.g. attempt_001 of
+    A-pathmnist-28px-batchnorm-policy-none-s0) while a LATER attempt is
+    the true canonical completion; considering only the first attempt
+    would incorrectly conclude "not eligible, proceed to train" forever.
+
+    Algorithm:
+    1. Enumerate every attempt, numeric order.
+    2. Ignore anything not status=="completed" (failed/aborted/running/
+       planned attempts are never skip candidates).
+    3. Any completed attempt with a DIFFERENT config_hash than the current
+       cell is a hard failure (protocol drift), regardless of eligibility.
+    4. Among completed, matching-hash attempts, exclude any marked
+       canonical_eligible=false in the amendments ledger.
+    5. For each remaining (eligible, matching-hash) candidate, fully
+       verify its artifact_manifest.json -- missing or corrupt artifacts
+       are a hard failure for that candidate (never silently retrained).
+    6. Exactly one such candidate -> return it as the skip target.
+       Zero -> return None (no skip, a new attempt is needed).
+       More than one -> AmbiguousCanonicalCompletionError (never silently
+       chosen by recency/favorability).
+
+    Never uses any metric value (validation accuracy, loss, etc.) in this
+    decision.
     """
     run_id = cell.run_id()
-    existing = find_completed_attempt(cell, root)
-    if existing is None:
-        return None
     this_hash = cell_config_hash(cell)
-    if existing["config_hash"] != this_hash:
-        raise ConflictingCompletedRunError(
-            f"Run {run_id} has a completed attempt with a different config hash."
+
+    eligible_matching_candidates = []
+    for status in list_attempts(cell, root):
+        if status.get("status") != RunStatus.COMPLETED.value:
+            continue  # failed/aborted/running/planned attempts are never skip candidates
+        if status["config_hash"] != this_hash:
+            raise ConflictingCompletedRunError(
+                f"Run {run_id} has a completed attempt_{status['attempt_number']:03d} with a "
+                f"different config hash ({status['config_hash']}) than the current cell "
+                f"({this_hash}). This indicates the frozen protocol changed underneath an "
+                f"existing result. Hard failure -- will not silently overwrite or ignore."
+            )
+        if ledger_module.is_canonical_ineligible(run_id, status["attempt_number"], amendments_ledger_path):
+            continue  # ineligible: does not block a new attempt, not a skip candidate
+
+        attempt_dir = run_directory(cell, root) / f"attempt_{status['attempt_number']:03d}"
+        manifest_path = attempt_dir / "artifact_manifest.json"
+        if not manifest_path.exists():
+            raise PersistenceVerificationError(
+                f"Eligible candidate attempt_{status['attempt_number']:03d} for run {run_id} is "
+                f"missing artifact_manifest.json -- cannot verify it as canonical. Hard failure, "
+                f"not an automatic retrain."
+            )
+        manifest = json.loads(manifest_path.read_text())
+        verify_artifact_manifest(attempt_dir, manifest)  # raises PersistenceVerificationError on corruption
+        eligible_matching_candidates.append(status)
+
+    if len(eligible_matching_candidates) == 0:
+        return None
+    if len(eligible_matching_candidates) > 1:
+        attempt_numbers = sorted(s["attempt_number"] for s in eligible_matching_candidates)
+        raise AmbiguousCanonicalCompletionError(
+            f"Multiple eligible, matching-hash, artifact-valid completed attempts exist for "
+            f"run {run_id}: attempts {attempt_numbers}. Refusing to silently choose "
+            f"earliest/latest/best -- resolve via the amendments ledger before proceeding."
         )
-    if ledger_module.is_canonical_ineligible(run_id, existing["attempt_number"], amendments_ledger_path):
-        return None  # ineligible: does not block a new attempt
+
+    selected = eligible_matching_candidates[0]
     return CellTrainResult(
         status="skipped_completed",
         run_id=run_id,
-        attempt_number=existing["attempt_number"],
+        attempt_number=selected["attempt_number"],
         checkpoint_hash=None,
-        reason="matching completed, canonical-eligible attempt already exists",
+        reason="matching completed, canonical-eligible, artifact-verified attempt already exists",
     )
 
 

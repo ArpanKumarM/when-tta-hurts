@@ -134,15 +134,34 @@ def _read_status(attempt_dir: Path) -> dict[str, Any] | None:
 
 
 def find_completed_attempt(cell: MatrixCell, root: str | Path = DEFAULT_CONFIRMATORY_ROOT) -> dict | None:
-    """Return the first (canonical) COMPLETED attempt's status dict for this
-    cell, if one exists, else None. 'First valid completed attempt becomes
-    canonical' -- attempt_001 before attempt_002, etc."""
-    run_dir = run_directory(cell, root)
-    for attempt_dir in _list_attempt_dirs(run_dir):
-        status = _read_status(attempt_dir)
-        if status and status.get("status") == RunStatus.COMPLETED.value:
+    """Return the first COMPLETED attempt's status dict for this cell, in
+    numeric attempt order, if one exists, else None.
+
+    NOTE: this returns the first completed attempt UNCONDITIONALLY --
+    it has no notion of canonical-eligibility (the amendments-ledger
+    overlay lives in ledger.py/orchestrator.py, a layer above this
+    module). Do NOT use this function alone to decide whether to skip a
+    run -- an early completed-but-ineligible attempt (e.g. attempt_001 of
+    A-pathmnist-28px-batchnorm-policy-none-s0) will always be returned
+    here even when a later attempt is the true canonical completion. See
+    orchestrator.py::check_confirmatory_skip() for the eligibility-aware,
+    all-attempts selection this module intentionally does not perform.
+    """
+    for status in list_attempts(cell, root):
+        if status.get("status") == RunStatus.COMPLETED.value:
             return status
     return None
+
+
+def list_attempts(cell: MatrixCell, root: str | Path = DEFAULT_CONFIRMATORY_ROOT) -> list[dict[str, Any]]:
+    """Return every attempt's status dict for this cell, in NUMERIC
+    attempt order (attempt_2 before attempt_10, not lexicographic string
+    order) -- callers needing to consider every attempt (not just the
+    first) should use this rather than re-deriving directory listings."""
+    run_dir = run_directory(cell, root)
+    statuses = [s for d in _list_attempt_dirs(run_dir) if (s := _read_status(d)) is not None]
+    statuses.sort(key=lambda s: s["attempt_number"])
+    return statuses
 
 
 def next_attempt_number(cell: MatrixCell, root: str | Path = DEFAULT_CONFIRMATORY_ROOT) -> int:
