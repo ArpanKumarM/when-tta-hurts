@@ -4,11 +4,23 @@
 Modes:
     plan               -- parse/validate/expand the matrix, print it, no side effects.
     train-validation    -- either:
-                            (a) --run-id: train ONE cell, single-cell canary mode.
+                            (a) --run-id: train ONE cell, single-cell mode. The run ID
+                                is resolved against the approved production matrix (no
+                                string-prefix parsing); a Block A/B/C cell dispatches
+                                to run_canary_cell() exactly as before, and a Block D
+                                cell dispatches to run_block_d_train_validation_cell()
+                                -- the SAME gate-authorized orchestrator function
+                                Phase 2B.3F wired up, enforcing its full authorization
+                                order (committed gate decision -> effective config ->
+                                skip/conflict checks -> clean tree -> MPS -> checksum
+                                -> loader -> model -> training -> persistence ->
+                                ledger) before anything else. No flag exists anywhere
+                                in this path to override or skip that authorization.
                             (b) --block {A,B,C} --expected-total N --expected-pending M:
                                 execute every cell of that block sequentially, in
                                 committed matrix order. --run-id and --block are
-                                mutually exclusive. Block D is always rejected.
+                                mutually exclusive. Block D is always rejected here
+                                (no --block D route exists in this task).
                                 Both --expected-total/--expected-pending are
                                 mandatory with --block and are verified BEFORE any
                                 MPS/dataset/model activity for any cell.
@@ -38,21 +50,46 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from when_tta_hurts.devices import DeviceUnavailableError
+from when_tta_hurts.matrix import parse_and_validate_matrix
 from when_tta_hurts.orchestrator import (
     AmbiguousCanonicalCompletionError,
+    BlockDAuthorizationError,
     BlockDRunRejectedError,
     DirtyWorkingTreeError,
+    NotBlockDRunIdError,
     PersistenceVerificationError,
     PilotOrExcludedSeedRunIdError,
     UnknownRunIdError,
     UnsupportedBlockError,
     print_plan,
     run_block_cells,
+    run_block_d_train_validation_cell,
     run_canary_cell,
     run_final_test,
     verify_block_completions,
 )
 from when_tta_hurts.run_identity import ConflictingCompletedRunError
+
+_BLOCK_D_FULL_NAME = "D_conditional_128px"
+
+
+def _resolve_run_id_block(run_id: str, matrix_path: str) -> str | None:
+    """Resolve `run_id` to its block name via the SAME approved production
+    matrix expansion resolve_canary_run_id()/resolve_block_d_run_id() use
+    internally (parse_and_validate_matrix(..., block_d_gate_passed=True)
+    + an exact MatrixCell.run_id() match) -- no string-prefix parsing of
+    any kind. Returns None for a run_id that matches no cell at all
+    (unknown/malformed); the CLI then lets run_canary_cell() report that
+    exactly as it already does, unchanged. This function performs ONLY
+    matrix lookup -- it verifies nothing about authorization, gate
+    decisions, or eligibility; that remains exclusively the job of
+    run_canary_cell()/run_block_d_train_validation_cell() themselves.
+    """
+    expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    for cell in expanded.cells:
+        if cell.run_id() == run_id:
+            return cell.block
+    return None
 
 
 class _SingleValueAction(argparse.Action):
@@ -116,11 +153,17 @@ def main() -> int:
             parser.error("train-validation requires exactly one of --run-id or --block.")
 
         if args.run_id:
+            resolved_block = _resolve_run_id_block(args.run_id, args.matrix)
             try:
-                result = run_canary_cell(args.run_id, matrix_path=args.matrix)
+                if resolved_block == _BLOCK_D_FULL_NAME:
+                    result = run_block_d_train_validation_cell(args.run_id, matrix_path=args.matrix)
+                else:
+                    result = run_canary_cell(args.run_id, matrix_path=args.matrix)
             except (
                 UnknownRunIdError,
                 BlockDRunRejectedError,
+                NotBlockDRunIdError,
+                BlockDAuthorizationError,
                 PilotOrExcludedSeedRunIdError,
                 DirtyWorkingTreeError,
                 DeviceUnavailableError,
