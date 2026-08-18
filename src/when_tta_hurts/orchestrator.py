@@ -341,6 +341,8 @@ class CellTrainResult:
     attempt_number: int | None
     checkpoint_hash: str | None
     reason: str | None = None
+    config_hash: str | None = None
+    manifest_verified: bool | None = None
 
 
 def check_confirmatory_skip(
@@ -420,12 +422,16 @@ def check_confirmatory_skip(
         )
 
     selected = eligible_matching_candidates[0]
+    selected_attempt_dir = run_directory(cell, root) / f"attempt_{selected['attempt_number']:03d}"
+    result_data = json.loads((selected_attempt_dir / "result.json").read_text())
     return CellTrainResult(
         status="skipped_completed",
         run_id=run_id,
         attempt_number=selected["attempt_number"],
-        checkpoint_hash=None,
+        checkpoint_hash=result_data["checkpoint_hash"],
         reason="matching completed, canonical-eligible, artifact-verified attempt already exists",
+        config_hash=selected["config_hash"],
+        manifest_verified=True,
     )
 
 
@@ -733,6 +739,212 @@ def run_canary_cell(
         dataset_expected_checksum_md5=bundle.dataset_expected_checksum_md5,
         dataset_actual_checksum_md5=bundle.dataset_actual_checksum_md5,
     )
+
+
+BLOCK_SHORT_TO_FULL = {
+    "A": "A_core_normalization_resolution",
+    "B": "B_policy_matching",
+    "C": "C_positive_control_reproduction",
+}
+# Block D is deliberately absent from this mapping -- resolve_block_full_name()
+# rejects it explicitly (Phase 2B.3B execution is A/B/C only; Block D
+# requires its own gate evaluation and is out of scope for this path).
+
+
+class UnsupportedBlockError(RuntimeError):
+    """Raised for --block D or any unrecognized block letter passed to the
+    sequential block-execution or verify-completions paths."""
+
+
+def resolve_block_full_name(block: str) -> str:
+    if block == "D":
+        raise UnsupportedBlockError(
+            "Block D is not authorized for sequential block execution via this path -- "
+            "it requires its own gate evaluation (block_d_gate.py) and is out of scope."
+        )
+    if block not in BLOCK_SHORT_TO_FULL:
+        raise UnsupportedBlockError(
+            f"Unrecognized block '{block}' -- expected one of "
+            f"{sorted(BLOCK_SHORT_TO_FULL)} (or 'D', rejected)."
+        )
+    return BLOCK_SHORT_TO_FULL[block]
+
+
+def run_block_cells(
+    block: str,
+    expected_total: int,
+    expected_pending: int,
+    matrix_path: str = "configs/experiment_matrix.yaml",
+    loader_factory: DataLoaderFactory = default_train_validation_loader_factory,
+    device_resolver: Callable[[], torch.device] = lambda: select_device("mps"),
+    require_clean_tree: bool = True,
+    root: str = "artifacts/confirmatory",
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
+) -> list[CellTrainResult]:
+    """Execute every cell of `block` (A/B/C only) sequentially, in the
+    exact committed matrix order. NEVER parallel.
+
+    Guard order (all metadata-only, before any MPS/data/artifact touch
+    for ANY cell in the block):
+    1. Resolve the block letter (rejects D and unknown letters).
+    2. Parse the matrix; the block's actual cell count must equal
+       `expected_total`, or this is a hard failure before anything else.
+    3. Compute the skip/pending decision for EVERY cell up front (pure
+       metadata reads via check_confirmatory_skip -- no MPS, no
+       checksums, no datasets, no models). The count of cells requiring
+       execution must equal `expected_pending`, or this is a hard
+       failure before any cell is touched.
+
+    Only after both counts are confirmed does real execution begin, cell
+    by cell, in order:
+    - A cell with an existing eligible canonical completion is skipped
+      immediately (no MPS/data/model for that cell).
+    - Otherwise: working-tree check, fresh device resolution, fresh
+      loader_factory() call, fresh model/optimizer/scheduler construction
+      (all internal to run_train_validation_cell -- every cell starts
+      from a completely fresh state, reseeded from ITS OWN registered
+      seed via seed_everything(cell.seed) before model construction and
+      before the training loop's first DataLoader iteration).
+    - After each cell that actually trained, cell-local references are
+      released and the MPS cache is cleared (torch.mps.empty_cache())
+      before moving to the next cell -- this is memory hygiene only and
+      never alters any scientific computation (confirmed across attempts
+      1-4 of the canary cell, which reproduced bit-identically despite
+      this same cache-clearing behavior already occurring within
+      benchmark/training code paths elsewhere in this codebase).
+    - The FIRST cell that fails/aborts stops the entire block immediately
+      -- no further cells are attempted, no retry, and the exception
+      propagates to the caller. All previously completed cells in this
+      block invocation, and all pre-existing attempts, remain untouched.
+    """
+    full_block_name = resolve_block_full_name(block)
+    expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    cells = expanded.cells_by_block[full_block_name]
+
+    if len(cells) != expected_total:
+        raise ValueError(
+            f"Block {block} expected-total mismatch: matrix has {len(cells)} cells, "
+            f"--expected-total={expected_total}. Refusing to proceed before touching any data."
+        )
+
+    # Pure metadata pass: decide skip vs. pending for every cell BEFORE any
+    # MPS/checksum/dataset/model/DataLoader activity for any cell.
+    precomputed_skips: dict[str, CellTrainResult | None] = {}
+    for cell in cells:
+        precomputed_skips[cell.run_id()] = check_confirmatory_skip(cell, root, amendments_ledger_path)
+
+    actual_pending = sum(1 for skip in precomputed_skips.values() if skip is None)
+    if actual_pending != expected_pending:
+        raise ValueError(
+            f"Block {block} expected-pending mismatch: {actual_pending} cells actually "
+            f"pending, --expected-pending={expected_pending}. Refusing to proceed before "
+            f"touching any data."
+        )
+
+    results: list[CellTrainResult] = []
+    for cell in cells:
+        run_id = cell.run_id()
+        skip = precomputed_skips[run_id]
+        if skip is not None:
+            results.append(skip)
+            continue
+
+        if require_clean_tree:
+            require_clean_working_tree()
+        device = device_resolver()
+        bundle = loader_factory(cell)
+        result = run_train_validation_cell(
+            cell,
+            bundle.train_loader,
+            bundle.val_loader,
+            device,
+            root=root,
+            confirmatory_ledger_path=confirmatory_ledger_path,
+            amendments_ledger_path=amendments_ledger_path,
+            matrix_path=matrix_path,
+            dataset_artifact_filename=bundle.dataset_artifact_filename,
+            dataset_expected_checksum_md5=bundle.dataset_expected_checksum_md5,
+            dataset_actual_checksum_md5=bundle.dataset_actual_checksum_md5,
+        )
+        results.append(result)
+
+        # Release cell-local references and MPS cache -- memory hygiene
+        # only, never affects scientific computation.
+        del bundle, device
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
+        if result.status == "failed":
+            break  # stop the entire block immediately; never retry, never continue
+
+    return results
+
+
+def verify_block_completions(
+    block: str,
+    expected_total: int,
+    matrix_path: str = "configs/experiment_matrix.yaml",
+    root: str = "artifacts/confirmatory",
+    amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
+) -> dict:
+    """METADATA-ONLY block completion report. Never initializes MPS, never
+    verifies/downloads/loads any dataset, never constructs a model or
+    DataLoader, and makes NO filesystem or ledger changes -- it only calls
+    check_confirmatory_skip() (itself metadata-only) once per cell and
+    classifies the outcome.
+    """
+    full_block_name = resolve_block_full_name(block)
+    expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    cells = expanded.cells_by_block[full_block_name]
+    if len(cells) != expected_total:
+        raise ValueError(
+            f"Block {block} expected-total mismatch: matrix has {len(cells)} cells, "
+            f"--expected-total={expected_total}."
+        )
+
+    cell_reports = []
+    missing, ambiguous, corrupt = [], [], []
+    canonical_count = 0
+    for cell in cells:
+        run_id = cell.run_id()
+        try:
+            skip = check_confirmatory_skip(cell, root, amendments_ledger_path)
+        except AmbiguousCanonicalCompletionError as e:
+            ambiguous.append(run_id)
+            cell_reports.append({"run_id": run_id, "status": "ambiguous", "error": str(e)})
+            continue
+        except (ConflictingCompletedRunError, PersistenceVerificationError) as e:
+            corrupt.append(run_id)
+            cell_reports.append({"run_id": run_id, "status": "corrupt", "error": str(e)})
+            continue
+
+        if skip is None:
+            missing.append(run_id)
+            cell_reports.append({"run_id": run_id, "status": "missing"})
+        else:
+            canonical_count += 1
+            cell_reports.append(
+                {
+                    "run_id": run_id,
+                    "status": "canonical",
+                    "attempt_number": skip.attempt_number,
+                    "checkpoint_hash": skip.checkpoint_hash,
+                    "config_hash": skip.config_hash,
+                }
+            )
+
+    return {
+        "block": block,
+        "expected_total": expected_total,
+        "actual_total": len(cells),
+        "canonical_count": canonical_count,
+        "missing": missing,
+        "ambiguous": ambiguous,
+        "corrupt": corrupt,
+        "failed_canonical": [],  # reserved; corrupt/ambiguous cover all current failure modes
+        "cells": cell_reports,
+    }
 
 
 def run_final_test(authorization_artifact_path: str = "configs/final_evaluation_authorization.yaml") -> None:

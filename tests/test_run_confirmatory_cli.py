@@ -33,7 +33,7 @@ def test_omitted_run_id_fails(cli_module, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc_info:
         cli_module.main()
     assert exc_info.value.code == 2
-    assert "--run-id is required" in capsys.readouterr().err
+    assert "requires exactly one of --run-id or --block" in capsys.readouterr().err
 
 
 def test_multiple_run_ids_fail(cli_module, monkeypatch, capsys):

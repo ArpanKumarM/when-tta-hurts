@@ -53,9 +53,9 @@ def _write_full_completed_attempt(root, cell, config_hash_override=None, corrupt
     attempt_dir, status = start_attempt(cell, root, allow_new_attempt_despite_matching_hash=True)
     model = _tiny_model()
     state_dict = {k: v.clone() for k, v in model.state_dict().items()}
-    save_checkpoint(state_dict, attempt_dir / "best_checkpoint.pt")
+    checkpoint_hash = save_checkpoint(state_dict, attempt_dir / "best_checkpoint.pt")
     atomic_write_json([{"epoch": 1}], attempt_dir / "training_history.json")
-    atomic_write_json({"result": True}, attempt_dir / "result.json")
+    atomic_write_json({"result": True, "checkpoint_hash": checkpoint_hash}, attempt_dir / "result.json")
     atomic_write_json({"metadata": True}, attempt_dir / "metadata.json")
     manifest = build_artifact_manifest(attempt_dir)
     if corrupt_manifest:
