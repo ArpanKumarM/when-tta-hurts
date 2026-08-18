@@ -144,10 +144,13 @@ def test_real_attempt_001_no_longer_triggers_completed_run_skip():
     assert skip is None  # must NOT skip -- attempt_001 is ineligible
 
 
-def test_real_next_attempt_resolves_to_2():
+def test_real_next_attempt_number_exceeds_ineligible_attempt_001():
+    """Regardless of how many attempts currently exist on disk, the next
+    attempt number must always be strictly greater than 1 -- attempt_001's
+    ineligibility must never cause its slot to be reused."""
     from when_tta_hurts.matrix import parse_and_validate_matrix
     from when_tta_hurts.run_identity import next_attempt_number
 
     expanded = parse_and_validate_matrix("configs/experiment_matrix.yaml", block_d_gate_passed=False)
     cell = expanded.cells[0]
-    assert next_attempt_number(cell, "artifacts/confirmatory") == 2
+    assert next_attempt_number(cell, "artifacts/confirmatory") > 1

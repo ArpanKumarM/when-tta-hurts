@@ -9,7 +9,11 @@ therefore canonical-eligible) ONLY after this module's
 3. Built artifact_manifest.json (path/size/sha256 for the content
    artifacts) and re-read every covered file to verify its hash matches.
 4. Confirmed the best checkpoint on disk restores into a fresh model with
-   tensors bit-identical to the in-memory best_state_dict.
+   tensors bit-identical to the in-memory best_state_dict -- DEVICE-
+   NEUTRALLY: checkpoint loading always uses map_location="cpu" and the
+   comparison model is explicitly moved to CPU, so this verification
+   never depends on, and never touches, whatever device training
+   happened on (MPS, CPU, or otherwise).
 
 artifact_manifest.json necessarily excludes itself (a file cannot contain
 its own hash) and status.json (whose final "completed" content is written
@@ -29,7 +33,7 @@ from typing import Any
 
 import torch
 
-from when_tta_hurts.artifacts import atomic_write_json, hash_file
+from when_tta_hurts.artifacts import atomic_write_json, hash_file, hash_state_dict
 
 REQUIRED_COMPLETION_ARTIFACTS = (
     "best_checkpoint.pt",
@@ -103,6 +107,13 @@ class PersistenceVerificationError(RuntimeError):
 
 class SchemaValidationError(PersistenceVerificationError):
     """Raised when a written artifact is missing required keys."""
+
+
+def _to_cpu_detached(state_dict: dict) -> dict:
+    """Device-neutral copy: NEVER mutates the input state_dict -- returns
+    a brand-new dict of detached CPU tensor copies, so callers can compare
+    checkpoints regardless of what device training happened on."""
+    return {k: v.detach().cpu() for k, v in state_dict.items()}
 
 
 @dataclass(frozen=True)
@@ -203,22 +214,69 @@ def persist_and_verify_completion(
     manifest = build_artifact_manifest(attempt_dir, REQUIRED_COMPLETION_ARTIFACTS)
     verify_artifact_manifest(attempt_dir, manifest)
 
-    # Confirm the best checkpoint on disk restores bit-identically.
+    # Confirm the best checkpoint on disk restores bit-identically --
+    # DEVICE-NEUTRAL: the checkpoint is always loaded with map_location=
+    # "cpu", and the comparison model is explicitly moved to CPU, so this
+    # verification never depends on (and never touches) whatever device
+    # training happened on. The in-memory best_state_dict is never
+    # mutated -- _to_cpu_detached() returns fresh copies.
+    #
+    # Key/shape/dtype/content are checked against the RAW file-loaded
+    # tensors (not tensors re-extracted from the model after
+    # load_state_dict), because load_state_dict silently casts an
+    # incoming tensor to the destination parameter's existing dtype --
+    # comparing post-load model tensors would mask a genuine file-level
+    # dtype anomaly. load_state_dict is still called (strict=True) to
+    # separately confirm the checkpoint is actually loadable into the
+    # target architecture ("best checkpoint is confirmed restored").
     restored_model = model_factory()
-    restored_state_dict = torch.load(checkpoint_path, weights_only=True)
-    restored_model.load_state_dict(restored_state_dict)
-    reference_keys = set(best_state_dict.keys())
-    restored_keys = set(restored_model.state_dict().keys())
+    restored_model.to("cpu")
+    raw_restored_cpu = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+
+    reference_state_dict_cpu = _to_cpu_detached(best_state_dict)
+    restored_state_dict_cpu = _to_cpu_detached(raw_restored_cpu)
+
+    reference_keys = set(reference_state_dict_cpu.keys())
+    restored_keys = set(restored_state_dict_cpu.keys())
     if reference_keys != restored_keys:
+        missing = sorted(reference_keys - restored_keys)
+        unexpected = sorted(restored_keys - reference_keys)
         raise PersistenceVerificationError(
-            "Restored checkpoint state_dict keys do not match the in-memory best_state_dict keys."
+            f"Restored checkpoint state_dict keys do not match the in-memory best_state_dict "
+            f"keys. Missing: {missing}. Unexpected: {unexpected}."
         )
-    for key, reference_tensor in best_state_dict.items():
-        if not torch.equal(reference_tensor, restored_model.state_dict()[key]):
+
+    for key in sorted(reference_keys):
+        reference_tensor = reference_state_dict_cpu[key]
+        restored_tensor = restored_state_dict_cpu[key]
+        if reference_tensor.shape != restored_tensor.shape:
+            raise PersistenceVerificationError(
+                f"Restored checkpoint tensor '{key}' shape mismatch: expected "
+                f"{reference_tensor.shape}, got {restored_tensor.shape}."
+            )
+        if reference_tensor.dtype != restored_tensor.dtype:
+            raise PersistenceVerificationError(
+                f"Restored checkpoint tensor '{key}' dtype mismatch: expected "
+                f"{reference_tensor.dtype}, got {restored_tensor.dtype}."
+            )
+        if not torch.equal(reference_tensor, restored_tensor):
             raise PersistenceVerificationError(
                 f"Restored checkpoint tensor '{key}' does not match the in-memory best checkpoint -- "
                 f"refusing to mark this attempt completed."
             )
+
+    try:
+        restored_model.load_state_dict(raw_restored_cpu, strict=True)
+    except RuntimeError as e:
+        raise PersistenceVerificationError(f"Restored checkpoint failed strict load_state_dict: {e}") from e
+
+    reference_content_hash = hash_state_dict(reference_state_dict_cpu)
+    restored_content_hash = hash_state_dict(restored_state_dict_cpu)
+    if reference_content_hash != restored_content_hash:
+        raise PersistenceVerificationError(
+            f"Device-neutral state-dict content hash mismatch: expected "
+            f"{reference_content_hash}, got {restored_content_hash}."
+        )
 
     atomic_write_json(manifest, attempt_dir / "artifact_manifest.json")
     return manifest
