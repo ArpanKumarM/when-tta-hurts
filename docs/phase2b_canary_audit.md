@@ -263,3 +263,90 @@ configuration and seed.
 - **`attempt_001` and `attempt_002` remain byte-for-byte unchanged** as of
   this writing -- re-verified immediately before this section was written
   (see hashes above and in section 4).
+
+## 10. `attempt_003`: successful completion, first canonical result
+
+After the device-neutral checkpoint-verification fix
+(`203a9dcc270443905aad021aa785b25bfc77c2ee`) landed, `attempt_003` of
+`A-pathmnist-28px-batchnorm-policy-none-s0` was executed via the same real
+production command as `attempt_002`. **It completed successfully end to
+end**, including the previously-failing persistence-verification step.
+
+Epoch history, best epoch (3), best validation accuracy
+(0.7388044782087165), best validation loss (0.9149315368171121),
+early-stopping outcome ("no validation-accuracy improvement (>
+min_delta=0.0) for 5 consecutive epochs" after epoch 8), and runtime
+(~75.66s) are **bit-identical** to `attempt_002`'s. All six required
+artifacts (`best_checkpoint.pt`, `training_history.json`, `result.json`,
+`metadata.json`, `status.json`, `artifact_manifest.json`) were written;
+`verify_artifact_manifest()` was re-run independently against the real
+files and passed with no exception.
+
+**Three-way scientific-weight reproduction:** `attempt_001`, `attempt_002`,
+and `attempt_003`'s `best_checkpoint.pt` files were independently
+re-hashed and compared. All three are identical by every measure: file
+MD5 `eb7cfb6e23b691f0ffc6a64f23b5a77f`, file SHA-256
+`029c761a903a7a0386e37f03c8a8eb7ad3eb9ced61a7c8c0191efe922ee96eed`,
+tensor-content hash (device-neutral `hash_state_dict`)
+`30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e`, and
+every tensor pairwise-equal via `torch.equal()`.
+
+## 11. `attempt_004`: unintended duplicate from an idempotent-skip search defect
+
+Immediately after `attempt_003` completed, the exact same production
+command was re-invoked ONLY to verify idempotent-skip behavior (per
+Phase 2B.3A Part 3's required verification step). **It did not skip** --
+it silently started, trained, and completed a fourth real attempt.
+
+**Root cause:** `run_identity.find_completed_attempt()` returns the
+FIRST completed attempt for a run ID in numeric order, unconditionally.
+For this run, that is always `attempt_001`. `orchestrator.check_confirmatory_skip()`
+called only this function, found `attempt_001` (status completed,
+matching config hash), checked *its* eligibility in the amendments
+ledger, found it ineligible, and returned "proceed to train" --
+**without ever examining `attempt_003`, which was already completed and
+canonical-eligible.** Because `attempt_001` is permanently ineligible,
+this defect meant the skip path could never succeed for this run ID
+again, regardless of how many valid eligible completions existed. This
+is a control-flow defect in the skip-selection logic introduced in the
+Part 2 correction (`fc40c4fc8f0505507c93a791a3c5a53c71576176`) -- not a
+scientific-integrity defect, and not present in the training computation
+itself.
+
+`attempt_004` completed with identical epoch history, best epoch/accuracy/
+loss, and early-stopping outcome to `attempt_002`/`attempt_003`. All six
+required artifacts exist and independently re-verified with
+`verify_artifact_manifest()` -- no exception.
+
+**Four-way checkpoint equivalence:** `attempt_004`'s `best_checkpoint.pt`
+was hashed and compared against all three prior attempts. All four are
+identical: file MD5 `eb7cfb6e23b691f0ffc6a64f23b5a77f`, file SHA-256
+`029c761a903a7a0386e37f03c8a8eb7ad3eb9ced61a7c8c0191efe922ee96eed`,
+tensor-content hash `30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e`.
+This is bitwise scientific-weight reproducibility across four independent
+executions of the same frozen configuration and seed.
+
+## 12. Canonical decision
+
+- **`attempt_003` is canonical.** It is the sole completed attempt with a
+  matching configuration hash and no ineligibility amendment -- the first
+  (and, pending the Part 2 skip-selection fix, currently the only) valid
+  confirmatory result for this run ID.
+- **`attempt_004` is preserved but excluded**, via an amendment row
+  (`canonical_eligible=false`, `amendment_type=unintended_duplicate_skip_search_defect`)
+  identical in structure to `attempt_001`'s amendment. Its checkpoint and
+  all result artifacts remain on disk, untouched, permanently.
+- **The exclusion of `attempt_004` was decided entirely from execution
+  chronology, not from any metric.** The decision followed directly from
+  the fact that it was created by an already-identified control-flow
+  defect (the command was invoked ONLY to test skip behavior, not to
+  produce a new confirmatory result) -- it would have been excluded
+  identically regardless of what validation accuracy it produced.
+  `attempt_004`'s `result.json` (including `best_val_accuracy`) was read
+  during this audit's artifact-verification and four-way-comparison work,
+  strictly AFTER the exclusion decision had already been made on
+  chronology grounds alone; no metric ever influenced that decision.
+- **No second matrix cell was started, no test-split access occurred, and
+  no TTA evaluation occurred** at any point across attempts 1-4 -- every
+  execution used only the checksum-verified official PathMNIST train/
+  validation splits for `A-pathmnist-28px-batchnorm-policy-none-s0`.
