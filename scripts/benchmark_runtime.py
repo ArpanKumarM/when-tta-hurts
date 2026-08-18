@@ -38,20 +38,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import statistics
 import sys
 import time
 from pathlib import Path
 
 import torch
-from medmnist import INFO
 from torch import nn
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from when_tta_hurts.data import load_pilot_split
+from when_tta_hurts.dataset_verification import verify_official_dataset_artifact
 from when_tta_hurts.devices import capture_environment, select_device
 from when_tta_hurts.models.small_cnn import build_small_cnn
 from when_tta_hurts.reproducibility import seed_everything
@@ -65,59 +64,27 @@ SAFE_MEMORY_FRACTION = 0.7
 MAX_EPOCHS_FOR_ESTIMATE = 30
 DATA_ROOT = Path("data/raw")
 
-ARTIFACT_FILENAMES = {28: "pathmnist.npz", 64: "pathmnist_64.npz"}
-INFO_MD5_KEYS = {28: "MD5", 64: "MD5_64"}
-
 ARTIFACT_PATH = Path("artifacts/benchmarks/runtime_benchmark.json")
 
-
-def _md5_of_file(path: Path) -> str:
-    """Actual MD5 (medmnist's own checksum scheme uses MD5, not SHA-256 --
-    named generically here but computes MD5 to match medmnist.INFO)."""
-    hasher = hashlib.md5()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+# Checksum verification (Phase 2B.2 audit): moved to the reusable
+# src/when_tta_hurts/dataset_verification.py module, which this script and
+# the confirmatory training path (orchestrator.py) both now import --
+# previously this logic existed ONLY here, unavailable to production
+# training. verify_official_artifact() below is now a thin wrapper for
+# this script's own reporting shape, delegating all real verification.
 
 
 def verify_official_artifact(resolution: int) -> dict:
-    """Verify the official artifact for `resolution` exists and its checksum
-    matches medmnist.INFO exactly. Raises RuntimeError (fails closed) on
-    any mismatch or missing expected-checksum entry.
-    """
-    if resolution not in ARTIFACT_FILENAMES:
-        raise ValueError(f"No known official artifact filename for resolution={resolution}")
-
-    filename = ARTIFACT_FILENAMES[resolution]
-    path = DATA_ROOT / filename
-    md5_key = INFO_MD5_KEYS[resolution]
-    expected_checksum = INFO["pathmnist"].get(md5_key)
-    if expected_checksum is None:
-        raise RuntimeError(
-            f"medmnist.INFO['pathmnist'] has no '{md5_key}' key -- cannot verify "
-            f"resolution={resolution}; failing closed rather than proceeding unverified."
-        )
-
-    if not path.exists():
-        raise RuntimeError(f"Expected official artifact {path} does not exist; not downloaded.")
-
-    actual_checksum = _md5_of_file(path)
-    if actual_checksum != expected_checksum:
-        raise RuntimeError(
-            f"CHECKSUM MISMATCH for {path}: expected {expected_checksum}, got {actual_checksum}. "
-            f"Failing closed -- refusing to benchmark against an unverified/corrupt artifact."
-        )
-
+    verification = verify_official_dataset_artifact("pathmnist", resolution, root=DATA_ROOT)
     return {
-        "dataset": "pathmnist",
+        "dataset": verification.dataset,
         "split": "train",
-        "native_resolution": resolution,
-        "artifact_filename": filename,
-        "expected_checksum_md5": expected_checksum,
-        "actual_checksum_md5": actual_checksum,
-        "checksum_verified": True,
-        "resized": False,
+        "native_resolution": verification.native_resolution,
+        "artifact_filename": Path(verification.artifact_path).name,
+        "expected_checksum_md5": verification.expected_checksum_md5,
+        "actual_checksum_md5": verification.actual_checksum_md5,
+        "checksum_verified": verification.checksum_verified,
+        "resized": verification.resized,
     }
 
 

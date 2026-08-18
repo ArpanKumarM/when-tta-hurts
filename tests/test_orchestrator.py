@@ -13,6 +13,7 @@ from when_tta_hurts.authorization import AuthorizationError
 from when_tta_hurts.matrix import MatrixCell
 from when_tta_hurts.orchestrator import (
     CellTrainResult,
+    FinalTestNotYetImplementedError,
     UnfavorableRerunRefusedError,
     print_plan,
     run_final_test,
@@ -20,6 +21,17 @@ from when_tta_hurts.orchestrator import (
     unmatched_comparison_cell_for,
 )
 from when_tta_hurts.run_identity import ConflictingCompletedRunError
+
+
+def _run_cell(cell, train_loader, val_loader, device, **kwargs):
+    """Wrapper forcing EVERY call in this file onto a temporary
+    confirmatory ledger derived from `root` -- never
+    artifacts/ledger_confirmatory.csv."""
+    from pathlib import Path
+
+    kwargs.setdefault("confirmatory_ledger_path", Path(kwargs["root"]) / "ledger_confirmatory.csv")
+    return run_train_validation_cell(cell, train_loader, val_loader, device, **kwargs)
+
 
 B_CELL = MatrixCell(
     block="B_policy_matching",
@@ -111,7 +123,7 @@ def test_run_train_validation_cell_completes_with_synthetic_data(tmp_path):
     device = torch.device("cpu")
     train_loader = _make_loader(16, batch_size=8)
     val_loader = _make_loader(8, batch_size=8)
-    result = run_train_validation_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
+    result = _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
     assert isinstance(result, CellTrainResult)
     assert result.status == "completed"
     assert result.checkpoint_hash is not None
@@ -121,8 +133,8 @@ def test_run_train_validation_cell_skips_matching_completed(tmp_path):
     device = torch.device("cpu")
     train_loader = _make_loader(16, batch_size=8)
     val_loader = _make_loader(8, batch_size=8)
-    run_train_validation_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
-    second = run_train_validation_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
+    _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
+    second = _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
     assert second.status == "skipped_completed"
 
 
@@ -132,7 +144,7 @@ def test_run_train_validation_cell_rejects_seed_314159(tmp_path):
     train_loader = _make_loader(16, batch_size=8)
     val_loader = _make_loader(8, batch_size=8)
     with pytest.raises(ValueError, match="314159"):
-        run_train_validation_cell(bad_cell, train_loader, val_loader, device, root=str(tmp_path))
+        _run_cell(bad_cell, train_loader, val_loader, device, root=str(tmp_path))
 
 
 def test_run_train_validation_cell_refuses_rerun_after_test_metrics(tmp_path):
@@ -140,7 +152,7 @@ def test_run_train_validation_cell_refuses_rerun_after_test_metrics(tmp_path):
     train_loader = _make_loader(16, batch_size=8)
     val_loader = _make_loader(8, batch_size=8)
     with pytest.raises(UnfavorableRerunRefusedError):
-        run_train_validation_cell(
+        _run_cell(
             A_CELL,
             train_loader,
             val_loader,
@@ -154,7 +166,7 @@ def test_run_train_validation_cell_conflicting_hash_hard_failure(tmp_path):
     device = torch.device("cpu")
     train_loader = _make_loader(16, batch_size=8)
     val_loader = _make_loader(8, batch_size=8)
-    run_train_validation_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
+    _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
 
     # Corrupt the stored hash to simulate protocol drift.
     import json
@@ -168,7 +180,7 @@ def test_run_train_validation_cell_conflicting_hash_hard_failure(tmp_path):
     status_path.write_text(json.dumps(data))
 
     with pytest.raises(ConflictingCompletedRunError):
-        run_train_validation_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
+        _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
 
 
 def test_run_train_validation_cell_preserves_failed_attempt(tmp_path):
@@ -179,16 +191,14 @@ def test_run_train_validation_cell_preserves_failed_attempt(tmp_path):
     val_loader = _make_loader(8, batch_size=8)
 
     with pytest.raises(Exception):
-        run_train_validation_cell(
-            A_CELL, train_loader, val_loader, device, root=str(tmp_path), max_training_seconds=0.0
-        )
+        _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path), max_training_seconds=0.0)
 
     from when_tta_hurts.run_identity import run_directory
 
     run_dir = run_directory(A_CELL, root=str(tmp_path))
     assert (run_dir / "attempt_001").exists()  # preserved
 
-    result = run_train_validation_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
+    result = _run_cell(A_CELL, train_loader, val_loader, device, root=str(tmp_path))
     assert result.status == "completed"
     assert result.attempt_number == 2
 
@@ -201,13 +211,23 @@ def test_run_final_test_fails_closed_without_authorization():
         run_final_test()
 
 
-def test_run_final_test_never_reaches_notimplemented():
+def test_run_final_test_never_reaches_locked_error():
     """Confirms the failure happens at the authorization check, not later
-    -- i.e. no dataset-related code executes first."""
+    -- i.e. no dataset-related code executes first, and the domain-specific
+    locked error is unreachable while unauthorized."""
     try:
         run_final_test()
         raise AssertionError("expected AuthorizationError")
     except AuthorizationError as e:
         assert "does not exist" in str(e)
-    except NotImplementedError:
-        raise AssertionError("reached NotImplementedError -- authorization gate was bypassed!") from None
+    except FinalTestNotYetImplementedError:
+        raise AssertionError(
+            "reached FinalTestNotYetImplementedError -- authorization gate was bypassed!"
+        ) from None
+
+
+def test_final_test_locked_error_is_domain_specific_not_generic():
+    """FinalTestNotYetImplementedError must not be a bare NotImplementedError
+    -- reaching this lock must be distinguishable from an accidental stub."""
+    assert not issubclass(FinalTestNotYetImplementedError, NotImplementedError)
+    assert issubclass(FinalTestNotYetImplementedError, RuntimeError)

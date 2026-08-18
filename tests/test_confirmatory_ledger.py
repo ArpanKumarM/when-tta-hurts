@@ -5,7 +5,13 @@ import csv
 
 import pytest
 
-from when_tta_hurts.ledger import LedgerConflictError, append_confirmatory_entry, append_pilot_entry
+from when_tta_hurts.ledger import (
+    CONFIRMATORY_LEDGER_FIELDNAMES,
+    LedgerConflictError,
+    append_confirmatory_entry,
+    append_pilot_entry,
+    ensure_confirmatory_ledger_exists,
+)
 
 BASE_KWARGS = dict(
     run_id="A-pathmnist-28px-batchnorm-s0",
@@ -136,3 +142,37 @@ def test_existing_pilot_ledger_schema_unaffected_by_confirmatory_ledger(tmp_path
     append_confirmatory_entry(ledger_path=confirmatory_ledger, **BASE_KWARGS)
 
     assert pilot_ledger.read_text() == before_content  # byte-for-byte unaffected
+
+
+def test_ensure_confirmatory_ledger_exists_creates_header_only(tmp_path):
+    path = tmp_path / "ledger_confirmatory.csv"
+    created = ensure_confirmatory_ledger_exists(path)
+    assert created is True
+    with path.open() as f:
+        rows = list(csv.DictReader(f))
+    assert rows == []  # header only, zero data rows -- no fabricated run
+    with path.open() as f:
+        header_line = f.readline().strip()
+    assert header_line.split(",") == list(CONFIRMATORY_LEDGER_FIELDNAMES)
+
+
+def test_ensure_confirmatory_ledger_exists_is_idempotent(tmp_path):
+    path = tmp_path / "ledger_confirmatory.csv"
+    ensure_confirmatory_ledger_exists(path)
+    append_confirmatory_entry(ledger_path=path, **BASE_KWARGS)
+    before = path.read_text()
+
+    created_again = ensure_confirmatory_ledger_exists(path)
+    assert created_again is False
+    assert path.read_text() == before  # untouched -- did not truncate/re-header an existing file
+
+
+def test_ensure_confirmatory_ledger_exists_fieldnames_match_append_row_keys(tmp_path):
+    """Confirms CONFIRMATORY_LEDGER_FIELDNAMES cannot silently drift from
+    what append_confirmatory_entry actually writes."""
+    path = tmp_path / "ledger_confirmatory.csv"
+    append_confirmatory_entry(ledger_path=path, **BASE_KWARGS)
+    with path.open() as f:
+        reader = csv.DictReader(f)
+        actual_fieldnames = reader.fieldnames
+    assert list(actual_fieldnames) == list(CONFIRMATORY_LEDGER_FIELDNAMES)

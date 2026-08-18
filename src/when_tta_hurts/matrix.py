@@ -140,6 +140,19 @@ class FrozenTrainingSettings:
 
 FROZEN_TRAINING_SETTINGS = FrozenTrainingSettings()
 
+# Canonical, filesystem-safe short tokens for each registered training
+# policy value -- used EXPLICITLY (not just presence/absence) in run_id(),
+# per the Phase 2B.2 audit requirement that the stable identity encode
+# training policy directly, not imply it from which block a cell belongs
+# to. The matched policy applied in Block B is specifically the frozen
+# "mixed" TTA policy (docs/experimental_protocol.md), hence "matched_mixed".
+# Any NEW training_policy value not in this map is rejected (fail-closed)
+# rather than silently falling through to a possibly-colliding token.
+TRAINING_POLICY_TOKENS: dict[str, str] = {
+    "none": "none",
+    "matched_to_approved_tta_policy": "matched_mixed",
+}
+
 
 @dataclass(frozen=True)
 class MatrixCell:
@@ -150,19 +163,32 @@ class MatrixCell:
     resolution: int
     model: str
     normalization: str
-    training_policy: str  # "none" or "matched_to_approved_tta_policy"
+    training_policy: str  # "none" or "matched_to_approved_tta_policy" -- see TRAINING_POLICY_TOKENS
     seed: int
 
     def run_id(self) -> str:
         """Deterministic, human-readable stable run ID -- see run_identity.py
         for the canonical implementation this delegates to conceptually;
-        kept here too since MatrixCell is the natural place to derive it."""
+        kept here too since MatrixCell is the natural place to derive it.
+
+        training_policy is ALWAYS explicitly encoded (via TRAINING_POLICY_TOKENS),
+        not merely implied by block membership -- two cells identical in
+        every field except training_policy always get different run IDs,
+        even if that combination doesn't happen to occur in the current
+        matrix (e.g. a hypothetical future Block A cell with a non-'none'
+        policy would not collide with an actual Block A 'none'-policy cell).
+        """
+        if self.training_policy not in TRAINING_POLICY_TOKENS:
+            raise ValueError(
+                f"Unregistered training_policy '{self.training_policy}' -- add it to "
+                f"TRAINING_POLICY_TOKENS with an explicit, unambiguous token before use."
+            )
+        policy_token = TRAINING_POLICY_TOKENS[self.training_policy]
         parts = [self.block.split("_")[0], self.dataset, f"{self.resolution}px"]
         if self.model != "small_cnn":
             parts.append(self.model)
         parts.append(self.normalization)
-        if self.training_policy != "none":
-            parts.append("matched")
+        parts.append(f"policy-{policy_token}")
         parts.append(f"s{self.seed}")
         return "-".join(parts)
 

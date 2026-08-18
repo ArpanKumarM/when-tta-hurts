@@ -28,18 +28,10 @@ def test_resolutions_are_native_28_and_64_only(bench_module):
     assert bench_module.RESOLUTIONS == (28, 64)
 
 
-def test_artifact_filenames_map_to_distinct_official_files(bench_module):
-    assert bench_module.ARTIFACT_FILENAMES == {28: "pathmnist.npz", 64: "pathmnist_64.npz"}
-    # 64px must NOT reuse the 28px filename (i.e. not produced by resizing at load time)
-    assert bench_module.ARTIFACT_FILENAMES[28] != bench_module.ARTIFACT_FILENAMES[64]
-
-
-def test_info_md5_keys_distinct_per_resolution(bench_module):
-    assert bench_module.INFO_MD5_KEYS == {28: "MD5", 64: "MD5_64"}
-
-
-def test_verify_official_artifact_marks_resized_false(bench_module, tmp_path, monkeypatch):
-    # Point DATA_ROOT at a temp dir with a fake artifact matching a known checksum.
+def test_verify_official_artifact_delegates_to_shared_module(bench_module, tmp_path, monkeypatch):
+    """Checksum verification now lives in when_tta_hurts.dataset_verification
+    (Phase 2B.2 audit fix) -- this script's verify_official_artifact() is a
+    thin wrapper. Confirm it still works end-to-end via the shared module."""
     fake_path = tmp_path / "pathmnist.npz"
     fake_path.write_bytes(b"fake content")
     import hashlib
@@ -47,7 +39,9 @@ def test_verify_official_artifact_marks_resized_false(bench_module, tmp_path, mo
     real_md5 = hashlib.md5(b"fake content").hexdigest()
 
     monkeypatch.setattr(bench_module, "DATA_ROOT", tmp_path)
-    monkeypatch.setitem(bench_module.INFO["pathmnist"], "MD5", real_md5)
+    from medmnist import INFO
+
+    monkeypatch.setitem(INFO["pathmnist"], "MD5", real_md5)
 
     result = bench_module.verify_official_artifact(28)
     assert result["resized"] is False
@@ -61,20 +55,28 @@ def test_verify_official_artifact_fails_closed_on_checksum_mismatch(bench_module
     fake_path.write_bytes(b"corrupted content")
 
     monkeypatch.setattr(bench_module, "DATA_ROOT", tmp_path)
-    monkeypatch.setitem(bench_module.INFO["pathmnist"], "MD5", "0" * 32)  # deliberately wrong
+    from medmnist import INFO
 
-    with pytest.raises(RuntimeError, match="CHECKSUM MISMATCH"):
+    monkeypatch.setitem(INFO["pathmnist"], "MD5", "0" * 32)  # deliberately wrong
+
+    from when_tta_hurts.dataset_verification import ArtifactVerificationError
+
+    with pytest.raises(ArtifactVerificationError, match="CHECKSUM MISMATCH"):
         bench_module.verify_official_artifact(28)
 
 
 def test_verify_official_artifact_fails_closed_on_missing_file(bench_module, tmp_path, monkeypatch):
     monkeypatch.setattr(bench_module, "DATA_ROOT", tmp_path)  # empty dir, no artifact
-    with pytest.raises(RuntimeError, match="does not exist"):
+    from when_tta_hurts.dataset_verification import ArtifactVerificationError
+
+    with pytest.raises(ArtifactVerificationError, match="does not exist"):
         bench_module.verify_official_artifact(28)
 
 
 def test_verify_official_artifact_unknown_resolution_raises(bench_module):
-    with pytest.raises(ValueError):
+    from when_tta_hurts.dataset_verification import ArtifactVerificationError
+
+    with pytest.raises(ArtifactVerificationError):
         bench_module.verify_official_artifact(999)
 
 

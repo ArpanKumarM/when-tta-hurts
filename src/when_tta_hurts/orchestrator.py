@@ -18,12 +18,16 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 
+from when_tta_hurts import ledger as ledger_module
 from when_tta_hurts.authorization import verify_authorization
-from when_tta_hurts.matrix import MatrixCell, parse_and_validate_matrix
+from when_tta_hurts.data import load_pilot_split
+from when_tta_hurts.dataset_verification import DEFAULT_DATA_ROOT, verify_official_dataset_artifact
+from when_tta_hurts.matrix import FROZEN_TRAINING_SETTINGS, MatrixCell, parse_and_validate_matrix
 from when_tta_hurts.models.resnet import build_resnet18_small_input
 from when_tta_hurts.models.small_cnn import build_small_cnn
 from when_tta_hurts.reproducibility import seed_everything
@@ -38,6 +42,14 @@ from when_tta_hurts.run_identity import (
 from when_tta_hurts.training import EarlyStoppingConfig, TrainingOOMError, train_model
 from when_tta_hurts.transforms.policies import build_policy
 
+# The commit at which docs/phase2b_protocol.md and configs/experiment_matrix.yaml
+# were frozen (Phase 2B.1) -- recorded on every confirmatory ledger row so a
+# row is always traceable to the exact frozen protocol version that governed
+# it, independent of whatever commit later touched orchestrator.py itself.
+FROZEN_PROTOCOL_COMMIT = "ce4c962"
+
+DataLoaderFactory = Callable[[MatrixCell], tuple[DataLoader, DataLoader]]
+
 # Confirmatory runs never load any pretrained/existing checkpoint as a
 # starting point (_build_model always constructs fresh, untrained weights)
 # -- this structurally satisfies "reject pilot checkpoints/artifacts" for
@@ -50,6 +62,19 @@ class UnfavorableRerunRefusedError(RuntimeError):
     """Raised if a rerun is requested for a run_id whose confirmatory
     ledger already shows test_metrics_observed=True -- reruns after test
     metrics exist are never permitted, regardless of the stated reason."""
+
+
+class FinalTestNotYetImplementedError(RuntimeError):
+    """Raised by run_final_test() AFTER authorization has been verified
+    (so this is never reachable while unauthorized -- it can only ever
+    fire once an authorization artifact legitimately exists). Deliberately
+    NOT a generic/accidental NotImplementedError: reaching this point is an
+    intentional, documented lock, not a bug. Final-test evaluation logic
+    must not be implemented until Validation-Gated TTA is frozen -- see
+    docs/phase2b_protocol.md. Implementing it earlier would mean writing
+    test-split-touching code before the analysis method it evaluates is
+    even decided, which is exactly the kind of test-split proximity this
+    project's firewall discipline exists to prevent."""
 
 
 def _git_commit_hash() -> str:
@@ -108,6 +133,35 @@ def _build_model(cell: MatrixCell) -> torch.nn.Module:
     raise ValueError(f"Unknown model '{cell.model}'")
 
 
+def default_train_validation_loader_factory(
+    cell: MatrixCell, root: str | Path = DEFAULT_DATA_ROOT
+) -> tuple[DataLoader, DataLoader]:
+    """PRODUCTION data-loading path for a confirmatory matrix cell.
+
+    Verifies the official checksummed NATIVE-resolution artifact BEFORE
+    constructing any DataLoader -- fails closed (ArtifactVerificationError)
+    on a missing file, a checksum mismatch, or an unsupported dataset/
+    resolution, so a resized proxy or corrupt download can never reach a
+    training loop. Loads train/val splits ONLY via load_pilot_split(),
+    which has no test-split access mechanism of any kind -- no test loader
+    is reachable through this factory.
+
+    This is real, wired production code, not a stub -- but it is not
+    invoked against real data in Phase 2B.2 (scripts/run_confirmatory.py's
+    train-validation mode still refuses to run in this phase). Tests must
+    inject a synthetic factory (see DataLoaderFactory) instead of calling
+    this one; no production code path allows a synthetic backend to be
+    selected via CLI flag or environment variable.
+    """
+    verify_official_dataset_artifact(cell.dataset, cell.resolution, root=root)
+    train_ds = load_pilot_split(cell.dataset, split="train", size=cell.resolution, root=str(root))
+    val_ds = load_pilot_split(cell.dataset, split="val", size=cell.resolution, root=str(root))
+    batch_size = FROZEN_TRAINING_SETTINGS.batch_size_28_64px
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    return train_loader, val_loader
+
+
 @dataclass
 class CellTrainResult:
     status: str  # "skipped_completed" | "completed" | "failed"
@@ -125,12 +179,28 @@ def run_train_validation_cell(
     root: str = "artifacts/confirmatory",
     max_training_seconds: float | None = None,
     ledger_check_test_metrics: Callable[[str], bool] | None = None,
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    protocol_commit: str = FROZEN_PROTOCOL_COMMIT,
 ) -> CellTrainResult:
     """TRAIN-VALIDATION MODE for one cell. Uses train_loader/val_loader
     ONLY -- never a test loader (no test-loader parameter exists on this
     function at all, structurally impossible to pass one). NOT invoked
     against real data in Phase 2B.2 -- exercised only with synthetic
-    tensors in tests.
+    tensors and temporary ledgers in tests.
+
+    All training hyperparameters (learning rate, weight decay, epochs,
+    early-stopping patience/min-delta) are read explicitly from
+    matrix.FROZEN_TRAINING_SETTINGS -- the single frozen-protocol source of
+    truth -- rather than relying on train_model()'s own defaults, which
+    happen to coincidentally match but must never be the thing actually
+    trusted.
+
+    On both success and failure, appends exactly one row to the
+    confirmatory ledger (`confirmatory_ledger_path`) tagged
+    confirmatory=True: status="completed" with validation_metrics_observed
+    =True on success, or status="failed" with `failure_reason` set on any
+    exception (including OOM and non-finite loss). test_metrics_observed
+    is always False here -- this function never touches the test split.
 
     `ledger_check_test_metrics`: optional callable(run_id) -> bool, used to
     enforce the "no rerun after test metrics observed" rule; if it returns
@@ -162,6 +232,7 @@ def run_train_validation_cell(
         )
 
     attempt_dir, status = start_attempt(cell, root)
+    settings = FROZEN_TRAINING_SETTINGS
     try:
         seed_everything(cell.seed)
         model = _build_model(cell).to(device)
@@ -177,7 +248,13 @@ def run_train_validation_cell(
             train_loader,
             val_loader,
             device,
-            early_stopping=EarlyStoppingConfig(patience=5, min_delta=0.0),
+            max_epochs=settings.max_epochs,
+            learning_rate=settings.learning_rate,
+            weight_decay=settings.weight_decay,
+            early_stopping=EarlyStoppingConfig(
+                patience=settings.early_stopping_patience,
+                min_delta=settings.early_stopping_min_delta,
+            ),
             augmentation_policy=augmentation_policy,
             augmentation_seed=augmentation_seed,
             max_training_seconds=max_training_seconds,
@@ -187,15 +264,76 @@ def run_train_validation_cell(
 
         ckpt_hash = save_checkpoint(result.best_state_dict, attempt_dir / "best_checkpoint.pt")
         finish_attempt(attempt_dir, status, RunStatus.COMPLETED)
+        ledger_module.append_confirmatory_entry(
+            ledger_path=confirmatory_ledger_path,
+            run_id=run_id,
+            attempt_id=status.attempt_number,
+            block=cell.block,
+            config_hash=this_hash,
+            protocol_commit=protocol_commit,
+            dataset=cell.dataset,
+            model=cell.model,
+            resolution=cell.resolution,
+            normalization=cell.normalization,
+            training_policy=cell.training_policy,
+            seed=cell.seed,
+            split="validation",
+            status="completed",
+            checkpoint_hash=ckpt_hash,
+            started_at=status.started_at,
+            ended_at=status.ended_at,
+            runtime_seconds=status.ended_at - status.started_at,
+            validation_metrics_observed=True,
+            test_metrics_observed=False,
+        )
         return CellTrainResult(
             status="completed", run_id=run_id, attempt_number=status.attempt_number, checkpoint_hash=ckpt_hash
         )
     except TrainingOOMError as e:
         finish_attempt(attempt_dir, status, RunStatus.FAILED, failure_reason=f"OOM: {e}")
+        _append_failed_confirmatory_row(
+            cell, status, this_hash, f"OOM: {e}", confirmatory_ledger_path, protocol_commit
+        )
         raise
     except Exception as e:
         finish_attempt(attempt_dir, status, RunStatus.FAILED, failure_reason=str(e))
+        _append_failed_confirmatory_row(
+            cell, status, this_hash, str(e), confirmatory_ledger_path, protocol_commit
+        )
         raise
+
+
+def _append_failed_confirmatory_row(
+    cell: MatrixCell,
+    status,
+    config_hash: str,
+    failure_reason: str,
+    confirmatory_ledger_path: str | Path,
+    protocol_commit: str,
+) -> None:
+    ledger_module.append_confirmatory_entry(
+        ledger_path=confirmatory_ledger_path,
+        run_id=cell.run_id(),
+        attempt_id=status.attempt_number,
+        block=cell.block,
+        config_hash=config_hash,
+        protocol_commit=protocol_commit,
+        dataset=cell.dataset,
+        model=cell.model,
+        resolution=cell.resolution,
+        normalization=cell.normalization,
+        training_policy=cell.training_policy,
+        seed=cell.seed,
+        split="validation",
+        status="failed",
+        checkpoint_hash="",
+        started_at=status.started_at,
+        ended_at=status.ended_at,
+        runtime_seconds=status.ended_at - status.started_at,
+        failure_reason=failure_reason,
+        validation_metrics_observed=False,
+        test_metrics_observed=False,
+    )
 
 
 def run_final_test(authorization_artifact_path: str = "configs/final_evaluation_authorization.yaml") -> None:
@@ -205,8 +343,10 @@ def run_final_test(authorization_artifact_path: str = "configs/final_evaluation_
     this phase.
     """
     verify_authorization(authorization_artifact_path)  # will raise -- artifact does not exist
-    raise NotImplementedError(
-        "Final-test evaluation logic is intentionally not implemented in Phase 2B.2 -- "
-        "reaching this point would require Validation-Gated TTA to be frozen and a real "
-        "authorization artifact to exist, neither of which is true yet."
+    raise FinalTestNotYetImplementedError(
+        "Final-test evaluation is locked: authorization has been verified, but final-test "
+        "evaluation logic is intentionally not yet implemented. It may only be implemented "
+        "AFTER Validation-Gated TTA is designed and frozen (see docs/phase2b_protocol.md) -- "
+        "reaching this point in Phase 2B.2 is impossible in practice, since verify_authorization() "
+        "above always raises first (no real authorization artifact exists in this phase)."
     )

@@ -35,6 +35,51 @@ INCIDENTS_LEDGER_PATH = Path("artifacts/ledger_incidents.csv")
 # schemas are completely unaffected by this file's existence.
 CONFIRMATORY_LEDGER_PATH = Path("artifacts/ledger_confirmatory.csv")
 
+# Single source of truth for the confirmatory ledger's column order --
+# used both by append_confirmatory_entry (row construction) and
+# ensure_confirmatory_ledger_exists (header-only file creation), so the
+# two can never drift apart.
+CONFIRMATORY_LEDGER_FIELDNAMES: tuple[str, ...] = (
+    "confirmatory",
+    "run_id",
+    "attempt_id",
+    "block",
+    "config_hash",
+    "protocol_commit",
+    "dataset",
+    "model",
+    "resolution",
+    "normalization",
+    "training_policy",
+    "seed",
+    "split",
+    "status",
+    "checkpoint_hash",
+    "started_at",
+    "ended_at",
+    "runtime_seconds",
+    "failure_reason",
+    "validation_metrics_observed",
+    "test_metrics_observed",
+)
+
+
+def ensure_confirmatory_ledger_exists(ledger_path: str | Path = CONFIRMATORY_LEDGER_PATH) -> bool:
+    """Create a HEADER-ONLY confirmatory ledger file at `ledger_path` if it
+    does not already exist. Writes NO data row -- only the column header,
+    using CONFIRMATORY_LEDGER_FIELDNAMES so it can never drift from what
+    append_confirmatory_entry actually writes. Returns True if the file was
+    created, False if it already existed (no-op).
+    """
+    path = Path(ledger_path)
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(CONFIRMATORY_LEDGER_FIELDNAMES))
+        writer.writeheader()
+    return True
+
 
 class LedgerConflictError(RuntimeError):
     """Raised when append_confirmatory_entry is called for a (run_id,
