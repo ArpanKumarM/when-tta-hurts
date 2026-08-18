@@ -1,0 +1,78 @@
+{
+  "activated": true,
+  "binding_total_hours": 7.132357804150767,
+  "block_d_contribution_seconds": 11564.488094942762,
+  "final_decision": "INCLUDED",
+  "frozen_pessimistic_abc_hours": 3.92,
+  "gate_condition_booleans": {
+    "binding_total_within_24_hours": true,
+    "bloodmnist": {
+      "checksum_match": true,
+      "device_mps": true,
+      "end_to_end_within_120_minutes": true,
+      "finite_loss": true,
+      "native_128px": true,
+      "no_oom": true,
+      "training_within_90_minutes": true
+    },
+    "pathmnist": {
+      "checksum_match": true,
+      "device_mps": true,
+      "end_to_end_within_120_minutes": true,
+      "finite_loss": true,
+      "native_128px": true,
+      "no_oom": true,
+      "training_within_90_minutes": true
+    }
+  },
+  "gate_conditions": [
+    "pathmnist: native 128px artifact confirmed",
+    "pathmnist: checksum verified",
+    "pathmnist: device confirmed mps",
+    "pathmnist: no OOM",
+    "pathmnist: loss finite throughout",
+    "pathmnist: projected training 54.6min/run within limit",
+    "pathmnist: projected end-to-end 56.7min/cell within limit",
+    "bloodmnist: native 128px artifact confirmed",
+    "bloodmnist: checksum verified",
+    "bloodmnist: device confirmed mps",
+    "bloodmnist: no OOM",
+    "bloodmnist: loss finite throughout",
+    "bloodmnist: projected training 7.2min/run within limit",
+    "bloodmnist: projected end-to-end 7.5min/cell within limit",
+    "pessimistic A+B+C+D total 7.13h within 24.0h limit"
+  ],
+  "matrix_hash": "ed9d36e6b3e0fdb4561de6ad70e75720502c97538bf7e6fdb67dd2bd4cb9045a",
+  "no_scientific_metric_informed_decision": true,
+  "per_dataset": {
+    "bloodmnist": {
+      "artifact_path": "data/raw/bloodmnist_128.npz",
+      "checksum_actual": "adace1e0ed228fccda1f39692059dd4c",
+      "checksum_expected": "adace1e0ed228fccda1f39692059dd4c",
+      "projected_end_to_end_minutes_per_cell": 7.544048881236813,
+      "projected_training_minutes_per_run": 7.2130656203148344,
+      "resized": false,
+      "selected_batch_size": 256
+    },
+    "pathmnist": {
+      "artifact_path": "data/raw/pathmnist_128.npz",
+      "checksum_actual": "ac42d08fb904d92c244187169d1fd1d9",
+      "checksum_expected": "ac42d08fb904d92c244187169d1fd1d9",
+      "projected_end_to_end_minutes_per_cell": 56.70310720177853,
+      "projected_training_minutes_per_run": 54.60950268255547,
+      "resized": false,
+      "selected_batch_size": 256
+    }
+  },
+  "per_dataset_pass": {
+    "bloodmnist": true,
+    "pathmnist": true
+  },
+  "protocol_commit": "ce4c962",
+  "raw_output_path": "artifacts/benchmarks/block_d_native_128_benchmark.json",
+  "raw_output_sha256": "e80123f9f6c0aafdbf7a846351c7294c12b3aa7a26a5f7fb6e52ab79c0adecb4",
+  "schema_version": "1.0",
+  "scientific_metric_confirmation": "Decision derived solely from runtime, memory-fraction, checksum, and loss-finiteness evidence; the benchmark record schema carries no performance-quality field of any kind, and no held-out split was read at any point in this pipeline.",
+  "source_commit": "5f47d25dee6906f8f44e58ba411f406bc8339634",
+  "spec_commit": "3189580733581e41555b2cccda80366f58e22383"
+}
