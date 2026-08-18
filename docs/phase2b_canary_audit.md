@@ -158,3 +158,108 @@ no overwrite, no metric leakage results from it) -- addressed in Part 2
   process outside of PyTorch's own internal early-stopping comparison
   (which never left process memory and was never logged, printed, or
   persisted).
+
+## 9. `attempt_002`: failed at post-training persistence verification
+
+After the observability/skip-ordering correction (`fc40c4fc8f0505507c93a791a3c5a53c71576176`)
+and the eligibility-boolean-parsing fix (`f2e2fe07c0b12287314a8cfcf680981c7a6474b4`)
+landed, `attempt_002` of `A-pathmnist-28px-batchnorm-policy-none-s0` was
+executed via the real production command:
+
+```
+uv run python3 scripts/run_confirmatory.py train-validation --run-id A-pathmnist-28px-batchnorm-policy-none-s0
+```
+
+**Scientific training completed successfully.** The failure occurred
+strictly AFTER training, in the new post-training persistence-verification
+step (`result_artifacts.py::persist_and_verify_completion`'s
+checkpoint-restore comparison), which raised:
+
+```
+RuntimeError: Expected all tensors to be on the same device, but found at least two devices, mps:0 and cpu!
+```
+
+**Root cause:** `persist_and_verify_completion`'s `model_factory` callable
+constructed a fresh model without moving it to the training device.
+`torch.load()` restored the saved checkpoint's tensors onto their
+originally-saved device (MPS), while the freshly-constructed comparison
+model defaulted to CPU. `torch.equal()` then raised on the cross-device
+comparison. This bug exists only in the new verification instrumentation
+added in `fc40c4fc8`; it does not exist in, and had no effect on, the
+training computation itself. It was never caught by any prior test
+because every existing test ran on `torch.device("cpu")`, where the
+model_factory's default device and the training device coincide -- this
+was the first execution against real MPS.
+
+### Complete eight-epoch history (from `training_history.json`, written
+### successfully before the failure point)
+
+| epoch | learning_rate | train_loss | val_loss | val_accuracy | epoch_runtime_s |
+|---|---|---|---|---|---|
+| 1 | 0.001000 | 0.6061511701 | 1.1447124557 | 0.5930627749 | 9.645014500 |
+| 2 | 0.000997260948 | 0.3332840328 | 1.5202585471 | 0.5906637345 | 9.338128416 |
+| 3 | 0.000989073800 | 0.2527653527 | 0.9149315368 | 0.7388044782 | 9.420314500 |
+| 4 | 0.000975528258 | 0.2083446707 | 3.9892766944 | 0.3962415034 | 9.438764375 |
+| 5 | 0.000956772729 | 0.1794501554 | 1.2563373124 | 0.6599360256 | 9.421177833 |
+| 6 | 0.000933012702 | 0.1553598728 | 3.1791103030 | 0.5136945222 | 9.515376458 |
+| 7 | 0.000904508497 | 0.1366218688 | 1.1107464026 | 0.6694322271 | 9.469812292 |
+| 8 | 0.000871572413 | 0.1239525544 | 2.7124165786 | 0.5489804078 | 9.634175041 |
+
+Best epoch: **3** (best_val_accuracy=0.7388044782087165,
+best_val_loss=0.9149315368171121). Early-stopped after epoch 8: "no
+validation-accuracy improvement (> min_delta=0.0) for 5 consecutive
+epochs". Total runtime: 75.88329879200319 seconds (~75.96s including
+attempt bookkeeping overhead). Peak MPS memory:
+current_allocated_bytes=7,777,024, driver_allocated_bytes=1,170,292,736.
+
+### All available artifact hashes
+
+- `best_checkpoint.pt`: file MD5 `eb7cfb6e23b691f0ffc6a64f23b5a77f`, file
+  SHA-256 `029c761a903a7a0386e37f03c8a8eb7ad3eb9ced61a7c8c0191efe922ee96eed`,
+  tensor-content hash (`hash_state_dict`)
+  `30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e`
+- `metadata.json`: file MD5 `2397747453b83338553ee29291d0ab0d`
+- `result.json`: file MD5 `8618db86c9ce4d0110f614dba4e76ba4`
+- `status.json`: file MD5 `e9118eb66c93d5af3fbf8aa355add762`
+- `training_history.json`: file MD5 `33c35a5fdfb0ebf805762e079990eafa`
+
+### Checkpoint equivalence with `attempt_001`
+
+Independently re-verified (not merely trusted from the failed run's own
+in-process record): `attempt_002`'s `best_checkpoint.pt` is **byte-for-byte
+identical** to `attempt_001`'s -- identical file MD5
+(`eb7cfb6e23b691f0ffc6a64f23b5a77f`), identical file SHA-256
+(`029c761a903a7a0386e37f03c8a8eb7ad3eb9ced61a7c8c0191efe922ee96eed`), and
+identical tensor-content hash
+(`30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e`), with
+every tensor confirmed equal via `torch.equal()` across the full
+state_dict. This is bitwise reproducibility of the scientific training
+computation across two independent executions with the same frozen
+configuration and seed.
+
+### Confirmations
+
+- **`artifact_manifest.json` and `status=completed` were correctly
+  withheld.** Both are the last two artifacts `persist_and_verify_completion`
+  writes, strictly gated on the checkpoint-restore comparison succeeding.
+  Since that comparison raised, neither was ever written --
+  `attempt_002/`'s directory contains exactly five files
+  (`best_checkpoint.pt`, `training_history.json`, `result.json`,
+  `metadata.json`, `status.json`), never six, and `status.json` correctly
+  reads `"status": "failed"`.
+- **Validation accuracy was first inspected only after the runner had
+  already failed.** `result.json` (containing `best_val_accuracy`) was
+  written by the runner itself as part of its own artifact-persistence
+  step, which completes BEFORE the checkpoint-restore comparison that
+  actually failed; no human or downstream process read any validation
+  metric until this audit document was written, after the run had already
+  terminated with `status="failed"` on disk and in the ledger.
+- **No scientific setting will change before `attempt_003`.** The Part 2
+  fix (device-neutral checkpoint verification, to be committed separately)
+  touches only `result_artifacts.py`'s post-training verification
+  comparison -- not model construction, training, checkpoint selection,
+  checkpoint saving, seeding, optimizer/scheduler, precision, or any
+  frozen hyperparameter in `matrix.FROZEN_TRAINING_SETTINGS`.
+- **`attempt_001` and `attempt_002` remain byte-for-byte unchanged** as of
+  this writing -- re-verified immediately before this section was written
+  (see hashes above and in section 4).
