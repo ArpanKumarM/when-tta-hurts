@@ -4,6 +4,7 @@ synthetic tensors/temp dirs; final-test mode is exercised only to confirm
 it fails closed without touching data."""
 
 import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -68,10 +69,18 @@ def test_plan_mode_no_filesystem_side_effects(tmp_path, capsys):
         os.chdir(cwd)
 
 
-def test_plan_mode_no_artifacts_confirmatory_dir_created():
-    assert not os.path.exists("artifacts/confirmatory")
+def test_plan_mode_creates_no_new_confirmatory_artifacts():
+    """artifacts/confirmatory/ may already legitimately exist (e.g. the
+    real Phase 2B.3A canary run) -- what matters is that plan mode adds
+    NOTHING to it, not that it's absent."""
+    before = set()
+    if os.path.exists("artifacts/confirmatory"):
+        before = {str(p) for p in Path("artifacts/confirmatory").rglob("*")}
     print_plan()
-    assert not os.path.exists("artifacts/confirmatory")
+    after = set()
+    if os.path.exists("artifacts/confirmatory"):
+        after = {str(p) for p in Path("artifacts/confirmatory").rglob("*")}
+    assert after == before
 
 
 def test_plan_mode_returns_39_with_block_d():

@@ -32,6 +32,7 @@ from when_tta_hurts.matrix import FROZEN_TRAINING_SETTINGS, MatrixCell, parse_an
 from when_tta_hurts.models.resnet import build_resnet18_small_input
 from when_tta_hurts.models.small_cnn import build_small_cnn
 from when_tta_hurts.reproducibility import seed_everything
+from when_tta_hurts.result_artifacts import PersistenceVerificationError, persist_and_verify_completion
 from when_tta_hurts.run_identity import (
     ConflictingCompletedRunError,
     RunStatus,
@@ -43,13 +44,22 @@ from when_tta_hurts.run_identity import (
 from when_tta_hurts.training import EarlyStoppingConfig, TrainingOOMError, train_model
 from when_tta_hurts.transforms.policies import build_policy
 
+try:
+    import importlib.metadata as _importlib_metadata
+
+    _TORCH_VERSION = _importlib_metadata.version("torch")
+    _KORNIA_VERSION = _importlib_metadata.version("kornia")
+    _MEDMNIST_VERSION = _importlib_metadata.version("medmnist")
+except Exception:
+    _TORCH_VERSION = _KORNIA_VERSION = _MEDMNIST_VERSION = "unknown"
+
 # The commit at which docs/phase2b_protocol.md and configs/experiment_matrix.yaml
 # were frozen (Phase 2B.1) -- recorded on every confirmatory ledger row so a
 # row is always traceable to the exact frozen protocol version that governed
 # it, independent of whatever commit later touched orchestrator.py itself.
 FROZEN_PROTOCOL_COMMIT = "ce4c962"
 
-DataLoaderFactory = Callable[[MatrixCell], tuple[DataLoader, DataLoader]]
+DataLoaderFactory = Callable[[MatrixCell], "TrainValidationLoaders"]
 
 # Confirmatory runs never load any pretrained/existing checkpoint as a
 # starting point (_build_model always constructs fresh, untrained weights)
@@ -87,21 +97,78 @@ class PilotOrExcludedSeedRunIdError(RuntimeError):
 
 
 class DirtyWorkingTreeError(RuntimeError):
-    """Raised when the working tree is not clean at canary-execution time
-    -- training must never run against an uncommitted/uncertain code
-    state, so this is checked before any dataset access."""
+    """Raised when the working tree contains anything other than a
+    verified, append-only extension of an approved research ledger --
+    training must never run against an uncommitted/uncertain code,
+    config, protocol, or test state, so this is checked before any
+    dataset access."""
+
+
+# Part 2D: an absolutely-clean-tree rule is impossible to satisfy in
+# practice, because every successful confirmatory run appends a row to a
+# tracked ledger as its own authorized side effect. The policy below
+# distinguishes that expected, verified append from any other dirtiness:
+# source/scripts/tests/configs/protocol docs/dependency files/unexpected
+# paths must be perfectly clean; these four ledgers may be modified ONLY
+# via a strict append (existing header + rows byte-identical, new rows
+# added at the end, nothing edited/deleted/reordered).
+APPROVED_APPEND_ONLY_LEDGER_PATHS = frozenset(
+    {
+        "artifacts/ledger.csv",
+        "artifacts/ledger_incidents.csv",
+        "artifacts/ledger_confirmatory.csv",
+        "artifacts/ledger_amendments.csv",
+    }
+)
 
 
 def _git_status_porcelain() -> str:
     return subprocess.check_output(["git", "status", "--porcelain"], text=True)
 
 
+def _git_show_head(path: str) -> str:
+    try:
+        return subprocess.check_output(["git", "show", f"HEAD:{path}"], text=True)
+    except subprocess.CalledProcessError:
+        return ""
+
+
 def require_clean_working_tree() -> None:
-    status = _git_status_porcelain()
-    if status.strip():
-        raise DirtyWorkingTreeError(
-            f"Refusing to execute against a dirty working tree. `git status --porcelain` output:\n{status}"
-        )
+    """See APPROVED_APPEND_ONLY_LEDGER_PATHS docstring above. Any dirty
+    path outside that set -- tracked or untracked, source or otherwise --
+    is a hard failure. Any dirty path inside that set must be a strict
+    append: the working-tree content must start with the exact HEAD
+    content (guaranteeing header/existing rows/ordering are byte-for-byte
+    unchanged and only new rows were added at the end); anything else
+    (edit, deletion, reordering, malformed append) is a hard failure.
+    """
+    status_output = _git_status_porcelain()
+    for line in status_output.splitlines():
+        if not line.strip():
+            continue
+        code = line[:2]
+        path = line[3:].strip()
+        if path not in APPROVED_APPEND_ONLY_LEDGER_PATHS:
+            raise DirtyWorkingTreeError(
+                f"Refusing to execute: unexpected dirty path '{path}' (git status '{code}'). "
+                f"Only appends to {sorted(APPROVED_APPEND_ONLY_LEDGER_PATHS)} are permitted; "
+                f"everything else (source, scripts, tests, configs, protocol docs, dependency "
+                f"files) must be perfectly clean."
+            )
+        if code.strip() != "M":
+            raise DirtyWorkingTreeError(
+                f"Refusing to execute: ledger '{path}' has git status '{code}' -- only an "
+                f"in-place modification (a verified append) is ever permitted for this path; "
+                f"additions/deletions/renames of the ledger file itself are not."
+            )
+        head_content = _git_show_head(path)
+        working_content = Path(path).read_text()
+        if not working_content.startswith(head_content):
+            raise DirtyWorkingTreeError(
+                f"Refusing to execute: '{path}' working-tree content is not a strict "
+                f"append-only extension of its committed HEAD content -- an edit, deletion, "
+                f"or reordering of existing content was detected."
+            )
 
 
 def resolve_canary_run_id(run_id: str, matrix_path: str = "configs/experiment_matrix.yaml") -> MatrixCell:
@@ -200,9 +267,23 @@ def _build_model(cell: MatrixCell) -> torch.nn.Module:
     raise ValueError(f"Unknown model '{cell.model}'")
 
 
+@dataclass(frozen=True)
+class TrainValidationLoaders:
+    """Train-validation DataLoader bundle plus the dataset-provenance facts
+    needed for result.json -- structurally two loaders only (no test-loader
+    field exists on this type at all, so no test loader is ever reachable
+    through it)."""
+
+    train_loader: DataLoader
+    val_loader: DataLoader
+    dataset_artifact_filename: str
+    dataset_expected_checksum_md5: str
+    dataset_actual_checksum_md5: str
+
+
 def default_train_validation_loader_factory(
     cell: MatrixCell, root: str | Path = DEFAULT_DATA_ROOT
-) -> tuple[DataLoader, DataLoader]:
+) -> TrainValidationLoaders:
     """PRODUCTION data-loading path for a confirmatory matrix cell.
 
     Verifies the official checksummed NATIVE-resolution artifact BEFORE
@@ -213,20 +294,24 @@ def default_train_validation_loader_factory(
     which has no test-split access mechanism of any kind -- no test loader
     is reachable through this factory.
 
-    This is real, wired production code, not a stub -- but it is not
-    invoked against real data in Phase 2B.2 (scripts/run_confirmatory.py's
-    train-validation mode still refuses to run in this phase). Tests must
-    inject a synthetic factory (see DataLoaderFactory) instead of calling
-    this one; no production code path allows a synthetic backend to be
-    selected via CLI flag or environment variable.
+    This is real, wired production code, not a stub. Tests must inject a
+    synthetic factory (see DataLoaderFactory) instead of calling this one;
+    no production code path allows a synthetic backend to be selected via
+    CLI flag or environment variable.
     """
-    verify_official_dataset_artifact(cell.dataset, cell.resolution, root=root)
+    verification = verify_official_dataset_artifact(cell.dataset, cell.resolution, root=root)
     train_ds = load_pilot_split(cell.dataset, split="train", size=cell.resolution, root=str(root))
     val_ds = load_pilot_split(cell.dataset, split="val", size=cell.resolution, root=str(root))
     batch_size = FROZEN_TRAINING_SETTINGS.batch_size_28_64px
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    return train_loader, val_loader
+    return TrainValidationLoaders(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        dataset_artifact_filename=Path(verification.artifact_path).name,
+        dataset_expected_checksum_md5=verification.expected_checksum_md5,
+        dataset_actual_checksum_md5=verification.actual_checksum_md5,
+    )
 
 
 @dataclass
@@ -238,6 +323,46 @@ class CellTrainResult:
     reason: str | None = None
 
 
+def check_confirmatory_skip(
+    cell: MatrixCell,
+    root: str | Path = "artifacts/confirmatory",
+    amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
+) -> CellTrainResult | None:
+    """Part 2C skip-ordering fix: determine whether a canonical-eligible
+    matching completion already exists, WITHOUT touching MPS, checksums,
+    datasets, DataLoaders, models, or ledger append -- this function only
+    reads run_identity's status.json files and the (small, local)
+    amendments ledger.
+
+    Returns a CellTrainResult(status="skipped_completed", ...) if an
+    eligible match exists (skip immediately). Returns None if execution is
+    needed -- either because no completed attempt exists, or because the
+    only completed attempt(s) are marked canonical-ineligible in the
+    amendments ledger (in which case they do NOT block a new attempt).
+    Raises ConflictingCompletedRunError if a completed attempt exists with
+    a DIFFERENT config hash (protocol drift -- always a hard failure,
+    regardless of eligibility).
+    """
+    run_id = cell.run_id()
+    existing = find_completed_attempt(cell, root)
+    if existing is None:
+        return None
+    this_hash = cell_config_hash(cell)
+    if existing["config_hash"] != this_hash:
+        raise ConflictingCompletedRunError(
+            f"Run {run_id} has a completed attempt with a different config hash."
+        )
+    if ledger_module.is_canonical_ineligible(run_id, existing["attempt_number"], amendments_ledger_path):
+        return None  # ineligible: does not block a new attempt
+    return CellTrainResult(
+        status="skipped_completed",
+        run_id=run_id,
+        attempt_number=existing["attempt_number"],
+        checkpoint_hash=None,
+        reason="matching completed, canonical-eligible attempt already exists",
+    )
+
+
 def run_train_validation_cell(
     cell: MatrixCell,
     train_loader: DataLoader,
@@ -247,13 +372,19 @@ def run_train_validation_cell(
     max_training_seconds: float | None = None,
     ledger_check_test_metrics: Callable[[str], bool] | None = None,
     confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
     protocol_commit: str = FROZEN_PROTOCOL_COMMIT,
+    matrix_path: str = "configs/experiment_matrix.yaml",
+    dataset_artifact_filename: str = "unknown",
+    dataset_expected_checksum_md5: str = "unknown",
+    dataset_actual_checksum_md5: str = "unknown",
 ) -> CellTrainResult:
     """TRAIN-VALIDATION MODE for one cell. Uses train_loader/val_loader
     ONLY -- never a test loader (no test-loader parameter exists on this
     function at all, structurally impossible to pass one). NOT invoked
-    against real data in Phase 2B.2 -- exercised only with synthetic
-    tensors and temporary ledgers in tests.
+    against real data except via the frozen Phase 2B.3A canary process --
+    exercised otherwise only with synthetic tensors and temporary ledgers
+    in tests.
 
     All training hyperparameters (learning rate, weight decay, epochs,
     early-stopping patience/min-delta) are read explicitly from
@@ -262,12 +393,11 @@ def run_train_validation_cell(
     happen to coincidentally match but must never be the thing actually
     trusted.
 
-    On both success and failure, appends exactly one row to the
-    confirmatory ledger (`confirmatory_ledger_path`) tagged
-    confirmatory=True: status="completed" with validation_metrics_observed
-    =True on success, or status="failed" with `failure_reason` set on any
-    exception (including OOM and non-finite loss). test_metrics_observed
-    is always False here -- this function never touches the test split.
+    status="completed" (and therefore canonical-eligible, absent a later
+    amendment) is written ONLY after persist_and_verify_completion()
+    succeeds -- see result_artifacts.py. ANY persistence/verification
+    failure is treated as a training failure: status="failed", an incident
+    is recorded, and PersistenceVerificationError propagates.
 
     `ledger_check_test_metrics`: optional callable(run_id) -> bool, used to
     enforce the "no rerun after test metrics observed" rule; if it returns
@@ -283,22 +413,17 @@ def run_train_validation_cell(
             f"reruns after test metrics exist are never permitted."
         )
 
-    existing = find_completed_attempt(cell, root)
+    skip = check_confirmatory_skip(cell, root, amendments_ledger_path)
+    if skip is not None:
+        return skip
     this_hash = cell_config_hash(cell)
-    if existing is not None:
-        if existing["config_hash"] == this_hash:
-            return CellTrainResult(
-                status="skipped_completed",
-                run_id=run_id,
-                attempt_number=existing["attempt_number"],
-                checkpoint_hash=None,
-                reason="matching completed attempt already exists",
-            )
-        raise ConflictingCompletedRunError(
-            f"Run {run_id} has a completed attempt with a different config hash."
-        )
 
-    attempt_dir, status = start_attempt(cell, root)
+    # check_confirmatory_skip already ruled out a hash mismatch (it would
+    # have raised ConflictingCompletedRunError above); any completed
+    # attempt still on disk at this point is necessarily eligibility-
+    # excluded (amendments-ledger ineligible), so a new attempt is
+    # legitimately needed -- see run_identity.start_attempt() docstring.
+    attempt_dir, status = start_attempt(cell, root, allow_new_attempt_despite_matching_hash=True)
     settings = FROZEN_TRAINING_SETTINGS
     try:
         seed_everything(cell.seed)
@@ -330,6 +455,76 @@ def run_train_validation_cell(
         from when_tta_hurts.artifacts import save_checkpoint
 
         ckpt_hash = save_checkpoint(result.best_state_dict, attempt_dir / "best_checkpoint.pt")
+
+        matrix_hash = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True).source_config_hash
+        result_fields = {
+            "run_id": run_id,
+            "attempt_id": status.attempt_number,
+            "best_epoch": result.best_epoch,
+            "best_val_accuracy": result.best_val_accuracy,
+            "best_val_loss": result.best_val_loss,
+            "epochs_completed": result.epochs_completed,
+            "early_stopped": result.early_stopped,
+            "early_stopping_reason": result.early_stopping_reason,
+            "total_runtime_seconds": result.training_time_seconds,
+            "peak_mps_memory": result.peak_mps_memory,
+            "checkpoint_hash": ckpt_hash,
+            "config_hash": this_hash,
+            "matrix_hash": matrix_hash,
+            "protocol_commit": protocol_commit,
+            "source_commit": _git_commit_hash(),
+            "dataset_artifact_filename": dataset_artifact_filename,
+            "dataset_expected_checksum_md5": dataset_expected_checksum_md5,
+            "dataset_actual_checksum_md5": dataset_actual_checksum_md5,
+            "device": str(device),
+            "dependency_versions": {
+                "torch": _TORCH_VERSION,
+                "kornia": _KORNIA_VERSION,
+                "medmnist": _MEDMNIST_VERSION,
+            },
+        }
+        metadata_fields = {
+            "run_id": run_id,
+            "attempt_id": status.attempt_number,
+            "block": cell.block,
+            "dataset": cell.dataset,
+            "resolution": cell.resolution,
+            "model": cell.model,
+            "normalization": cell.normalization,
+            "training_policy": cell.training_policy,
+            "seed": cell.seed,
+            "frozen_training_settings": {
+                "optimizer": settings.optimizer,
+                "learning_rate": settings.learning_rate,
+                "weight_decay": settings.weight_decay,
+                "loss": settings.loss,
+                "max_epochs": settings.max_epochs,
+                "lr_schedule": settings.lr_schedule,
+                "early_stopping_patience": settings.early_stopping_patience,
+                "early_stopping_min_delta": settings.early_stopping_min_delta,
+                "restore_best": settings.restore_best,
+                "batch_size_28_64px": settings.batch_size_28_64px,
+                "precision": settings.precision,
+                "mixed_precision": settings.mixed_precision,
+                "device": settings.device,
+                "label_smoothing": settings.label_smoothing,
+                "class_weighting": settings.class_weighting,
+                "channel_standardization": settings.channel_standardization,
+            },
+            "matrix_hash": matrix_hash,
+            "protocol_commit": protocol_commit,
+            "source_commit": _git_commit_hash(),
+        }
+
+        persist_and_verify_completion(
+            attempt_dir,
+            history=result.history,
+            result_fields=result_fields,
+            metadata_fields=metadata_fields,
+            best_state_dict=result.best_state_dict,
+            model_factory=lambda: _build_model(cell),
+        )
+
         finish_attempt(attempt_dir, status, RunStatus.COMPLETED)
         ledger_module.append_confirmatory_entry(
             ledger_path=confirmatory_ledger_path,
@@ -360,6 +555,19 @@ def run_train_validation_cell(
         finish_attempt(attempt_dir, status, RunStatus.FAILED, failure_reason=f"OOM: {e}")
         _append_failed_confirmatory_row(
             cell, status, this_hash, f"OOM: {e}", confirmatory_ledger_path, protocol_commit
+        )
+        raise
+    except PersistenceVerificationError as e:
+        finish_attempt(
+            attempt_dir, status, RunStatus.FAILED, failure_reason=f"persistence verification failed: {e}"
+        )
+        _append_failed_confirmatory_row(
+            cell,
+            status,
+            this_hash,
+            f"persistence verification failed: {e}",
+            confirmatory_ledger_path,
+            protocol_commit,
         )
         raise
     except Exception as e:
@@ -411,37 +619,53 @@ def run_canary_cell(
     require_clean_tree: bool = True,
     root: str = "artifacts/confirmatory",
     confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
 ) -> CellTrainResult:
     """Single entry point for the Phase 2B.3A canary CLI path (and its
-    tests). Enforces, IN ORDER, before any dataset access or artifact
-    creation:
+    tests). Enforces, IN ORDER:
     1. run_id resolves to exactly one approved unconditional A/B/C cell
        (rejects pilot/excluded-seed IDs, Block D IDs, and unknown IDs --
        see resolve_canary_run_id()).
-    2. Working tree is clean (skippable only for injected tests that don't
-       care about repo state, via require_clean_tree=False).
-    3. Device resolves to MPS with NO silent CPU fallback (device_resolver
-       defaults to select_device('mps'), which raises DeviceUnavailableError
-       rather than substituting CPU).
+    2. A canonical-eligible matching completion is checked and, if found,
+       returned as an IMMEDIATE skip -- before the working-tree check, MPS
+       initialization, checksum verification, dataset loading, DataLoader
+       construction, model construction, artifact-attempt creation, or any
+       ledger append (see check_confirmatory_skip()). A completed-but-
+       ineligible attempt (e.g. one recorded in the amendments ledger) does
+       NOT trigger this skip.
+    3. Only if execution is actually needed: working tree is clean
+       (skippable only for injected tests that don't care about repo
+       state, via require_clean_tree=False), then device resolves to MPS
+       with NO silent CPU fallback (device_resolver defaults to
+       select_device('mps'), which raises DeviceUnavailableError rather
+       than substituting CPU), then loader_factory(cell) (real checksum
+       verification before any DataLoader), then run_train_validation_cell().
 
-    Only after all three checks pass does it call loader_factory(cell) --
-    which performs official-checksum verification before constructing any
-    DataLoader -- and then run_train_validation_cell(). Tests inject a
-    synthetic loader_factory and a CPU device_resolver; production code
-    (scripts/run_confirmatory.py) uses the real defaults.
+    Tests inject a synthetic loader_factory and a CPU device_resolver;
+    production code (scripts/run_confirmatory.py) uses the real defaults.
     """
     cell = resolve_canary_run_id(run_id, matrix_path)
+
+    skip = check_confirmatory_skip(cell, root, amendments_ledger_path)
+    if skip is not None:
+        return skip
+
     if require_clean_tree:
         require_clean_working_tree()
     device = device_resolver()
-    train_loader, val_loader = loader_factory(cell)
+    bundle = loader_factory(cell)
     return run_train_validation_cell(
         cell,
-        train_loader,
-        val_loader,
+        bundle.train_loader,
+        bundle.val_loader,
         device,
         root=root,
         confirmatory_ledger_path=confirmatory_ledger_path,
+        amendments_ledger_path=amendments_ledger_path,
+        matrix_path=matrix_path,
+        dataset_artifact_filename=bundle.dataset_artifact_filename,
+        dataset_expected_checksum_md5=bundle.dataset_expected_checksum_md5,
+        dataset_actual_checksum_md5=bundle.dataset_actual_checksum_md5,
     )
 
 

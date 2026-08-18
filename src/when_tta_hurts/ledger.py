@@ -272,3 +272,109 @@ def append_confirmatory_entry(
 
     append_ledger_row(row, ledger_path)
     return "appended"
+
+
+# Append-only eligibility-overlay ledger (Phase 2B.3A Part 2B). NEVER
+# rewrites a row in CONFIRMATORY_LEDGER_PATH -- a completed attempt that
+# turns out to be scientifically/observability ineligible is recorded here
+# instead, as an additional row layered on top of (never replacing) the
+# original confirmatory-ledger row. See docs/phase2b_canary_audit.md for
+# the first real use of this mechanism.
+AMENDMENTS_LEDGER_PATH = Path("artifacts/ledger_amendments.csv")
+
+AMENDMENTS_LEDGER_FIELDNAMES: tuple[str, ...] = (
+    "run_id",
+    "attempt_id",
+    "original_status",
+    "canonical_eligible",
+    "amendment_type",
+    "reason",
+    "validation_metrics_computed",
+    "validation_metrics_persisted",
+    "validation_metrics_inspected",
+    "test_metrics_observed",
+    "tta_metrics_observed",
+    "source_commit",
+    "checkpoint_hash",
+    "recorded_at",
+)
+
+
+def ensure_amendments_ledger_exists(ledger_path: str | Path = AMENDMENTS_LEDGER_PATH) -> bool:
+    path = Path(ledger_path)
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(AMENDMENTS_LEDGER_FIELDNAMES))
+        writer.writeheader()
+    return True
+
+
+def append_amendment_entry(
+    *,
+    run_id: str,
+    attempt_id: int,
+    original_status: str,
+    canonical_eligible: bool,
+    amendment_type: str,
+    reason: str,
+    validation_metrics_computed: bool,
+    validation_metrics_persisted: bool,
+    validation_metrics_inspected: bool,
+    test_metrics_observed: bool,
+    tta_metrics_observed: bool,
+    source_commit: str,
+    checkpoint_hash: str,
+    recorded_at: str,
+    ledger_path: str | Path = AMENDMENTS_LEDGER_PATH,
+) -> str:
+    """Append one eligibility-overlay row. Idempotent on (run_id,
+    attempt_id): identical duplicate -> 'duplicate_ignored'; conflicting
+    duplicate -> LedgerConflictError (never silently overwritten), exactly
+    like append_confirmatory_entry."""
+    row = {
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "original_status": original_status,
+        "canonical_eligible": canonical_eligible,
+        "amendment_type": amendment_type,
+        "reason": reason,
+        "validation_metrics_computed": validation_metrics_computed,
+        "validation_metrics_persisted": validation_metrics_persisted,
+        "validation_metrics_inspected": validation_metrics_inspected,
+        "test_metrics_observed": test_metrics_observed,
+        "tta_metrics_observed": tta_metrics_observed,
+        "source_commit": source_commit,
+        "checkpoint_hash": checkpoint_hash,
+        "recorded_at": recorded_at,
+    }
+    row_str = {k: str(v) for k, v in row.items()}
+
+    existing_rows = _read_existing_rows(ledger_path)
+    for existing in existing_rows:
+        if existing.get("run_id") == run_id and existing.get("attempt_id") == str(attempt_id):
+            if existing == row_str:
+                return "duplicate_ignored"
+            raise LedgerConflictError(
+                f"Amendments ledger already has a DIFFERENT row for run_id={run_id}, "
+                f"attempt_id={attempt_id}. Existing: {existing}. New: {row_str}. "
+                f"Hard failure -- refusing to append a conflicting duplicate."
+            )
+
+    append_ledger_row(row, ledger_path)
+    return "appended"
+
+
+def is_canonical_ineligible(
+    run_id: str, attempt_id: int, ledger_path: str | Path = AMENDMENTS_LEDGER_PATH
+) -> bool:
+    """True iff the amendments ledger has a row for (run_id, attempt_id)
+    with canonical_eligible == False. A completed attempt with NO
+    amendment row is eligible by default (amendments are opt-in
+    exceptions, not a default-deny allowlist)."""
+    for row in _read_existing_rows(ledger_path):
+        if row.get("run_id") == run_id and row.get("attempt_id") == str(attempt_id):
+            if row.get("canonical_eligible") == "False":
+                return True
+    return False

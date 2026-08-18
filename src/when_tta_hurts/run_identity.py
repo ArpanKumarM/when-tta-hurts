@@ -155,7 +155,9 @@ def next_attempt_number(cell: MatrixCell, root: str | Path = DEFAULT_CONFIRMATOR
 
 
 def start_attempt(
-    cell: MatrixCell, root: str | Path = DEFAULT_CONFIRMATORY_ROOT
+    cell: MatrixCell,
+    root: str | Path = DEFAULT_CONFIRMATORY_ROOT,
+    allow_new_attempt_despite_matching_hash: bool = False,
 ) -> tuple[Path, AttemptStatus]:
     """Begin a new attempt for `cell`. Raises:
     - ConflictingCompletedRunError if a completed attempt exists with a
@@ -165,10 +167,14 @@ def start_attempt(
     is responsible for writing COMPLETED/FAILED/ABORTED when done.
 
     If a matching-hash completed attempt already exists, the caller should
-    check `find_completed_attempt` FIRST and skip -- this function does not
-    perform that skip itself, to keep "check" and "start" separable for
-    callers/tests.
-    """
+    normally check `find_completed_attempt` FIRST and skip -- this function
+    does not perform that skip itself, to keep "check" and "start"
+    separable for callers/tests. This is enforced as a second guard UNLESS
+    `allow_new_attempt_despite_matching_hash=True`, which the orchestrator
+    passes only when it has already determined (via an eligibility overlay
+    -- see ledger.py's amendments ledger) that the existing matching-hash
+    completed attempt is canonical-ineligible and a new attempt is
+    therefore legitimately needed (Phase 2B.3A Part 2B)."""
     this_hash = cell_config_hash(cell)
     existing_completed = find_completed_attempt(cell, root)
     if existing_completed is not None:
@@ -179,12 +185,13 @@ def start_attempt(
                 f"{this_hash}. This indicates the frozen protocol changed underneath an "
                 f"existing result. Hard failure -- will not silently overwrite."
             )
-        # Matching hash: caller should have skipped via find_completed_attempt;
-        # we still refuse to start a redundant attempt here as a second guard.
-        raise RunIdentityError(
-            f"Run {cell.run_id()} already has a matching-hash COMPLETED attempt -- "
-            f"use find_completed_attempt() to skip safely instead of starting a new attempt."
-        )
+        if not allow_new_attempt_despite_matching_hash:
+            # Matching hash: caller should have skipped via find_completed_attempt;
+            # we still refuse to start a redundant attempt here as a second guard.
+            raise RunIdentityError(
+                f"Run {cell.run_id()} already has a matching-hash COMPLETED attempt -- "
+                f"use find_completed_attempt() to skip safely instead of starting a new attempt."
+            )
 
     attempt_number = next_attempt_number(cell, root)
     run_dir = run_directory(cell, root)

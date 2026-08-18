@@ -37,16 +37,31 @@ class EarlyStoppingConfig:
     min_delta: float = 0.0
 
 
+def _mps_memory_snapshot(device: torch.device) -> dict | None:
+    """Read-only introspection, never affects computation. None on non-MPS
+    devices (torch.mps.* is only meaningful when device.type == 'mps')."""
+    if device.type != "mps":
+        return None
+    return {
+        "current_allocated_bytes": torch.mps.current_allocated_memory(),
+        "driver_allocated_bytes": torch.mps.driver_allocated_memory(),
+    }
+
+
 @dataclass
 class TrainResult:
     best_state_dict: dict
     best_epoch: int  # 1-indexed
     epochs_completed: int
     early_stopped: bool
-    history: list[dict] = field(
-        default_factory=list
-    )  # per-epoch: {epoch, train_loss, val_loss, val_accuracy}
+    early_stopping_reason: str = ""
+    best_val_accuracy: float = -1.0
+    best_val_loss: float | None = None
+    history: list[dict] = field(default_factory=list)
+    # per-epoch: {epoch, learning_rate, train_loss, val_loss, val_accuracy,
+    # epoch_runtime_seconds}
     training_time_seconds: float = 0.0
+    peak_mps_memory: dict | None = None
 
 
 def _is_oom_error(e: RuntimeError) -> bool:
@@ -112,6 +127,7 @@ def train_model(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
 
     best_val_accuracy = -1.0
+    best_val_loss = None
     best_state_dict = None
     best_epoch = 0
     epochs_without_improvement = 0
@@ -120,6 +136,7 @@ def train_model(
     t_start = time.perf_counter()
     epochs_completed = 0
     early_stopped = False
+    early_stopping_reason = ""
     step_counter = 0
 
     for epoch in range(1, max_epochs + 1):
@@ -128,6 +145,9 @@ def train_model(
                 f"Training exceeded max_training_seconds={max_training_seconds} "
                 f"at epoch {epoch} (elapsed={time.perf_counter() - t_start:.1f}s)."
             )
+
+        t_epoch_start = time.perf_counter()
+        lr_this_epoch = optimizer.param_groups[0]["lr"]  # read-only, pre-scheduler.step()
 
         model.train()
         train_loss_sum = 0.0
@@ -159,13 +179,22 @@ def train_model(
 
         train_loss = train_loss_sum / train_n
         val_loss, val_accuracy = _evaluate_loss_accuracy(model, val_loader, device, criterion)
+        epoch_runtime_seconds = time.perf_counter() - t_epoch_start
         history.append(
-            {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "val_accuracy": val_accuracy}
+            {
+                "epoch": epoch,
+                "learning_rate": lr_this_epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_accuracy": val_accuracy,
+                "epoch_runtime_seconds": epoch_runtime_seconds,
+            }
         )
         epochs_completed = epoch
 
         if val_accuracy > best_val_accuracy + early_stopping.min_delta:
             best_val_accuracy = val_accuracy
+            best_val_loss = val_loss
             best_state_dict = copy.deepcopy(model.state_dict())
             best_epoch = epoch
             epochs_without_improvement = 0
@@ -173,9 +202,17 @@ def train_model(
             epochs_without_improvement += 1
             if epochs_without_improvement >= early_stopping.patience:
                 early_stopped = True
+                early_stopping_reason = (
+                    f"no validation-accuracy improvement (> min_delta={early_stopping.min_delta}) "
+                    f"for {early_stopping.patience} consecutive epochs"
+                )
                 break
 
+    if not early_stopped:
+        early_stopping_reason = f"max_epochs={max_epochs} reached without triggering early stopping"
+
     training_time_seconds = time.perf_counter() - t_start
+    peak_mps_memory = _mps_memory_snapshot(device)
 
     if best_state_dict is None:
         # Should not happen (first epoch always "improves" over -1.0), but
@@ -189,6 +226,10 @@ def train_model(
         best_epoch=best_epoch,
         epochs_completed=epochs_completed,
         early_stopped=early_stopped,
+        early_stopping_reason=early_stopping_reason,
+        best_val_accuracy=best_val_accuracy,
+        best_val_loss=best_val_loss,
         history=history,
         training_time_seconds=training_time_seconds,
+        peak_mps_memory=peak_mps_memory,
     )

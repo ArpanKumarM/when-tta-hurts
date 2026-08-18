@@ -32,7 +32,13 @@ def _synthetic_loader_factory(cell):
     y = torch.randint(0, 9, (16,), generator=g)
     train_loader = DataLoader(TensorDataset(x, y), batch_size=8, shuffle=True, generator=g)
     val_loader = DataLoader(TensorDataset(x[:8], y[:8]), batch_size=8, shuffle=False)
-    return train_loader, val_loader
+    return orch.TrainValidationLoaders(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        dataset_artifact_filename="synthetic.npz",
+        dataset_expected_checksum_md5="synthetic",
+        dataset_actual_checksum_md5="synthetic",
+    )
 
 
 # --- resolve_canary_run_id ---
@@ -152,9 +158,10 @@ def test_valid_single_abc_id_reaches_injected_train_validation_path(tmp_path):
 def test_no_test_loader_reachable_from_loader_factory_contract():
     """DataLoaderFactory's contract is exactly (train_loader, val_loader) --
     structurally two values, no third (test) slot exists to populate."""
-    train_loader, val_loader = _synthetic_loader_factory(resolve_canary_run_id(VALID_A_RUN_ID))
-    assert isinstance(train_loader, DataLoader)
-    assert isinstance(val_loader, DataLoader)
+    bundle = _synthetic_loader_factory(resolve_canary_run_id(VALID_A_RUN_ID))
+    assert isinstance(bundle.train_loader, DataLoader)
+    assert isinstance(bundle.val_loader, DataLoader)
+    assert not hasattr(bundle, "test_loader")
 
 
 def test_default_loader_factory_source_has_no_test_split_access():
