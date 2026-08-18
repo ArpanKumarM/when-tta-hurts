@@ -27,6 +27,7 @@ mirroring orchestrator.py::check_confirmatory_skip()'s discipline.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -38,6 +39,7 @@ import numpy as np
 import torch
 
 from when_tta_hurts.artifacts import atomic_write_json, hash_file
+from when_tta_hurts.block_d_benchmark import _sha256_file
 from when_tta_hurts.config import config_hash
 from when_tta_hurts.evaluation.aggregation import (
     confidence_weighted_average,
@@ -69,6 +71,9 @@ from when_tta_hurts.orchestrator import (
     PilotOrExcludedSeedRunIdError,
     UnknownRunIdError,
     _build_model,
+    _default_commit_is_ancestor,
+    _default_git_tracked_and_clean,
+    _default_last_commit_for_path,
     authorize_block_d_cell,
     check_confirmatory_skip,
     compute_block_d_effective_config_hash,
@@ -76,16 +81,12 @@ from when_tta_hurts.orchestrator import (
 from when_tta_hurts.transforms.policies import build_policy
 
 FROZEN_PROTOCOL_COMMIT = "ce4c962"
-CONFIRMATORY_TTA_SEED = 271828  # NOTE: this is the PILOT's TTA seed -- see
-# NoConfirmatoryTTASeedYetError below. docs/phase2b_protocol.md sec.1 is
-# explicit that the confirmatory TTA seed must be DISTINCT from the pilot's
-# 271828 and "is to be set when the runner is implemented." This module IS
-# that implementation, so it must not silently reuse 271828. See
-# resolve_confirmatory_tta_seed() -- there is no default value here.
 
 PREFIX_SEQUENCE: tuple[int, ...] = (1, 2, 5, 10, 25, 50, 100)
 MAX_VIEWS = 100
 PRIMARY_N = 50
+PRIMARY_AGGREGATION = "mean_probability"
+POLICY_IDENTIFIER = "mixed"
 AGGREGATORS: tuple[str, ...] = ("mean_probability", "majority_vote", "confidence_weighted_average")
 SECONDARY_ANALYSES: tuple[str, ...] = (
     "scaling_curve",
@@ -97,29 +98,183 @@ SECONDARY_ANALYSES: tuple[str, ...] = (
 
 DEFAULT_EVALUATION_ROOT = Path("artifacts/validation_evaluation")
 
+# --- Phase 2B.4B: frozen confirmatory TTA seed ---------------------------
+#
+# docs/phase2b_protocol.md sec.1 deferred the confirmatory TTA seed to
+# "when the runner is implemented." That freeze happened in a SEPARATE,
+# committed, tracked artifact -- configs/validation_evaluation.yaml (see
+# docs/phase2b_validation_evaluation_freeze.md) -- not as a hardcoded
+# constant here and not as a CLI parameter. This module never accepts a
+# seed value from a caller in production; load_frozen_tta_seed_config()
+# below is the ONLY path to a confirmatory TTA seed, and it always
+# verifies the seed equals 1306178015, differs from the pilot TTA seed
+# (271828), the pilot training seed (314159), and the confirmatory
+# training seeds (0, 1, 2), and that the loaded prefix/N/aggregation/
+# policy configuration matches this module's own frozen constants above.
+_FROZEN_TTA_SEED = 1306178015
+_EXCLUDED_TTA_SEEDS: frozenset[int] = frozenset({271828, 314159, 0, 1, 2})
+DEFAULT_TTA_SEED_CONFIG_PATH = Path("configs/validation_evaluation.yaml")
 
-class NoConfirmatoryTTASeedYetError(RuntimeError):
-    """Raised by resolve_confirmatory_tta_seed() -- docs/phase2b_protocol.md
-    sec.1 requires a confirmatory TTA seed DISTINCT from the pilot's 271828,
-    "to be set when the runner is implemented." This function is that
-    decision point; it does not invent a value silently. A caller must
-    supply an explicit tta_seed distinct from 271828 (e.g. via CLI/config),
-    or this raises -- there is no implicit default."""
+
+class FrozenTTASeedConfigError(RuntimeError):
+    """Raised whenever the frozen confirmatory TTA-seed configuration
+    (configs/validation_evaluation.yaml) fails validation for ANY reason
+    -- missing, untracked, dirty, malformed, draft/unapproved, wrong
+    split, a seed other than 1306178015, a seed colliding with an
+    excluded value, view/prefix/aggregation/policy configuration
+    diverging from this module's frozen constants, no commit in
+    repository history, or a freeze commit that is not an ancestor of
+    the current HEAD. ALWAYS raised before evaluation identity/attempt
+    creation -- see run_validation_evaluation()."""
 
 
-def resolve_confirmatory_tta_seed(requested: int | None) -> int:
-    if requested is None:
-        raise NoConfirmatoryTTASeedYetError(
-            "No confirmatory TTA seed was supplied. docs/phase2b_protocol.md sec.1 requires "
-            "a confirmatory TTA seed distinct from the pilot's 271828, chosen explicitly -- "
-            "this function refuses to invent one silently."
+@dataclass(frozen=True)
+class FrozenTTASeedConfig:
+    confirmatory_tta_seed: int
+    prefix_sequence: tuple[int, ...]
+    total_generated_views: int
+    primary_prefix: int
+    primary_aggregation: str
+    policy_identifier: str
+    derivation_namespace: str
+    derivation_sha256: str
+    config_file_sha256: str
+    freeze_commit: str
+    config_path: str
+
+
+_REQUIRED_TTA_SEED_CONFIG_FIELDS = {
+    "schema_version",
+    "status",
+    "split",
+    "confirmatory_tta_seed",
+    "derivation",
+    "excluded_seeds",
+    "prefix_sequence",
+    "total_generated_views",
+    "primary_prefix",
+    "primary_aggregation",
+    "policy_identifier",
+}
+
+
+def load_frozen_tta_seed_config(
+    config_path: str | Path = DEFAULT_TTA_SEED_CONFIG_PATH,
+    git_tracked_and_clean=_default_git_tracked_and_clean,
+    last_commit_for_path=_default_last_commit_for_path,
+    commit_is_ancestor=_default_commit_is_ancestor,
+    head_commit: str | None = None,
+    expected_config_sha256: str | None = None,
+) -> FrozenTTASeedConfig:
+    """Load and exhaustively verify configs/validation_evaluation.yaml.
+    The injectable git_tracked_and_clean/last_commit_for_path/
+    commit_is_ancestor/head_commit parameters exist ONLY for synthetic
+    tests (mirroring authorize_block_d_cell()'s identical pattern) -- no
+    production call site (CLI or otherwise) overrides them."""
+    path = Path(config_path)
+    if not path.exists():
+        raise FrozenTTASeedConfigError(
+            f"{path} does not exist -- the confirmatory TTA seed has not been frozen. "
+            f"See docs/phase2b_validation_evaluation_freeze.md."
         )
-    if requested == 271828:
-        raise NoConfirmatoryTTASeedYetError(
-            "271828 is the Phase 2A PILOT's TTA seed and must not be reused for confirmatory "
-            "TTA view sequences, per docs/phase2b_protocol.md sec.1."
+    if not git_tracked_and_clean(path):
+        raise FrozenTTASeedConfigError(
+            f"{path} is not a clean, git-tracked artifact -- refusing to trust an "
+            f"untracked, uncommitted, or locally-modified TTA-seed configuration."
         )
-    return requested
+
+    import yaml
+
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except Exception as e:
+        raise FrozenTTASeedConfigError(f"{path} is malformed: {e}") from e
+    if not isinstance(raw, dict):
+        raise FrozenTTASeedConfigError(f"{path} must parse to a mapping.")
+
+    missing = _REQUIRED_TTA_SEED_CONFIG_FIELDS - set(raw.keys())
+    if missing:
+        raise FrozenTTASeedConfigError(f"{path} missing required field(s): {sorted(missing)}")
+
+    if raw["status"] != "approved":
+        raise FrozenTTASeedConfigError(f"{path} status is '{raw['status']}', not 'approved'.")
+    if raw["split"] != "validation":
+        raise FrozenTTASeedConfigError(f"{path} split must be 'validation', got {raw['split']!r}.")
+
+    seed = raw["confirmatory_tta_seed"]
+    if seed != _FROZEN_TTA_SEED:
+        raise FrozenTTASeedConfigError(
+            f"{path} confirmatory_tta_seed must be {_FROZEN_TTA_SEED}, got {seed!r}."
+        )
+    if seed in _EXCLUDED_TTA_SEEDS:
+        raise FrozenTTASeedConfigError(f"confirmatory_tta_seed {seed} collides with an excluded seed.")
+
+    derivation = raw["derivation"]
+    namespace = derivation["namespace"]
+    digest = hashlib.sha256(namespace.encode("utf-8")).hexdigest()
+    if digest != derivation["sha256_digest"]:
+        raise FrozenTTASeedConfigError(
+            f"{path}: recomputed SHA-256 of the derivation namespace does not match the "
+            f"recorded digest -- refusing to trust an inconsistent derivation."
+        )
+    if int(digest[:8], 16) != seed:
+        raise FrozenTTASeedConfigError(
+            f"{path}: derived integer int(digest[:8], 16)={int(digest[:8], 16)} does not "
+            f"match confirmatory_tta_seed={seed}."
+        )
+
+    if tuple(raw["prefix_sequence"]) != PREFIX_SEQUENCE:
+        raise FrozenTTASeedConfigError(
+            f"{path} prefix_sequence {raw['prefix_sequence']} diverges from the frozen "
+            f"PREFIX_SEQUENCE {PREFIX_SEQUENCE}."
+        )
+    if raw["total_generated_views"] != MAX_VIEWS:
+        raise FrozenTTASeedConfigError(
+            f"{path} total_generated_views={raw['total_generated_views']} diverges from "
+            f"MAX_VIEWS={MAX_VIEWS}."
+        )
+    if raw["primary_prefix"] != PRIMARY_N:
+        raise FrozenTTASeedConfigError(
+            f"{path} primary_prefix={raw['primary_prefix']} diverges from PRIMARY_N={PRIMARY_N}."
+        )
+    if raw["primary_aggregation"] != PRIMARY_AGGREGATION:
+        raise FrozenTTASeedConfigError(
+            f"{path} primary_aggregation={raw['primary_aggregation']!r} diverges from "
+            f"{PRIMARY_AGGREGATION!r}."
+        )
+    if raw["policy_identifier"] != POLICY_IDENTIFIER:
+        raise FrozenTTASeedConfigError(
+            f"{path} policy_identifier={raw['policy_identifier']!r} diverges from {POLICY_IDENTIFIER!r}."
+        )
+
+    freeze_commit = last_commit_for_path(path)
+    if freeze_commit is None:
+        raise FrozenTTASeedConfigError(f"{path} has no commit in repository history.")
+    head = head_commit if head_commit is not None else _git_commit_hash()
+    if not commit_is_ancestor(freeze_commit, head):
+        raise FrozenTTASeedConfigError(
+            f"Freeze commit {freeze_commit} for {path} is not an ancestor of current HEAD {head}."
+        )
+
+    config_file_sha256 = _sha256_file(path)
+    if expected_config_sha256 is not None and config_file_sha256 != expected_config_sha256:
+        raise FrozenTTASeedConfigError(
+            f"{path} SHA-256 {config_file_sha256} does not match expected {expected_config_sha256}."
+        )
+
+    return FrozenTTASeedConfig(
+        confirmatory_tta_seed=seed,
+        prefix_sequence=tuple(raw["prefix_sequence"]),
+        total_generated_views=raw["total_generated_views"],
+        primary_prefix=raw["primary_prefix"],
+        primary_aggregation=raw["primary_aggregation"],
+        policy_identifier=raw["policy_identifier"],
+        derivation_namespace=namespace,
+        derivation_sha256=digest,
+        config_file_sha256=config_file_sha256,
+        freeze_commit=freeze_commit,
+        config_path=str(path),
+    )
 
 
 class NoCanonicalTrainingCompletionError(RuntimeError):
@@ -303,12 +458,16 @@ class ValidationEvaluationConfig:
     protocol_commit: str
     matrix_hash: str
     source_commit: str
+    tta_seed_config_sha256: str
+    tta_seed_freeze_commit: str
+    tta_seed_derivation_sha256: str
 
 
 def compute_evaluation_id(cfg: ValidationEvaluationConfig) -> str:
     """Deterministic evaluation ID hashing every field listed in
     ValidationEvaluationConfig -- training run/attempt/checkpoint identity,
-    split (always 'validation'), TTA seed, prefix sequence, aggregators/
+    split (always 'validation'), the frozen TTA seed AND its config-file
+    SHA-256/freeze commit/derivation digest, prefix sequence, aggregators/
     secondary-analysis configuration, and protocol/matrix/source
     provenance. Two evaluation requests differing in ANY of these fields
     get a different evaluation_id."""
@@ -318,7 +477,7 @@ def compute_evaluation_id(cfg: ValidationEvaluationConfig) -> str:
 def build_validation_evaluation_config(
     cell: MatrixCell,
     training_result: CellTrainResult,
-    tta_seed: int,
+    tta_seed_config: FrozenTTASeedConfig,
     matrix_hash: str,
     source_commit: str,
 ) -> ValidationEvaluationConfig:
@@ -327,14 +486,17 @@ def build_validation_evaluation_config(
         training_attempt=training_result.attempt_number,
         checkpoint_hash=training_result.checkpoint_hash,
         split="validation",
-        tta_seed=tta_seed,
-        prefix_sequence=PREFIX_SEQUENCE,
+        tta_seed=tta_seed_config.confirmatory_tta_seed,
+        prefix_sequence=tta_seed_config.prefix_sequence,
         aggregators=AGGREGATORS,
         secondary_analyses=SECONDARY_ANALYSES,
-        policy="mixed",
+        policy=tta_seed_config.policy_identifier,
         protocol_commit=FROZEN_PROTOCOL_COMMIT,
         matrix_hash=matrix_hash,
         source_commit=source_commit,
+        tta_seed_config_sha256=tta_seed_config.config_file_sha256,
+        tta_seed_freeze_commit=tta_seed_config.freeze_commit,
+        tta_seed_derivation_sha256=tta_seed_config.derivation_sha256,
     )
 
 
@@ -399,17 +561,31 @@ def check_evaluation_skip(
 # ---------------------------------------------------------------------------
 
 
-def plan_validation_evaluation(matrix_path: str = "configs/experiment_matrix.yaml") -> list[dict[str, Any]]:
+def plan_validation_evaluation(matrix_path: str = "configs/experiment_matrix.yaml") -> dict[str, Any]:
     """SIDE-EFFECT-FREE. Never initializes MPS, opens a dataset/checkpoint,
     creates a file/directory, writes a ledger, or computes a prediction --
-    only reads matrix/ledger/status metadata already on disk. Lists all 39
-    eligible training cells with their canonical attempt (if any),
-    checkpoint hash (if canonical), a *planned* evaluation ID (using
-    tta_seed=None is not possible -- plan mode reports the evaluation ID
-    formula and required fields, not a computed ID, since the confirmatory
-    TTA seed is a caller-supplied parameter this function does not assume),
-    and the required analyses/prefix sequence.
+    only reads matrix/ledger/status metadata and the (small, local, git-
+    tracked) TTA-seed config file already on disk. Returns
+    {"tta_seed_config": {...} or {"error": ...}, "cells": [...]} -- the
+    frozen seed/config hash/freeze commit are reported once at the top
+    level (loading configs/validation_evaluation.yaml is itself a pure
+    local file+git-metadata read, never MPS/dataset/checkpoint access),
+    and each of the 39 eligible training cells lists its canonical
+    attempt (if any), checkpoint hash (if canonical), and the required
+    analyses/prefix sequence. A missing/invalid seed config is reported
+    as an error field, never raised -- plan mode never raises.
     """
+    try:
+        seed_cfg = load_frozen_tta_seed_config()
+        tta_seed_report: dict[str, Any] = {
+            "confirmatory_tta_seed": seed_cfg.confirmatory_tta_seed,
+            "config_file_sha256": seed_cfg.config_file_sha256,
+            "freeze_commit": seed_cfg.freeze_commit,
+            "config_path": seed_cfg.config_path,
+        }
+    except FrozenTTASeedConfigError as e:
+        tta_seed_report = {"error": str(e)}
+
     expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
     rows = []
     for cell in expanded.cells:
@@ -446,7 +622,7 @@ def plan_validation_evaluation(matrix_path: str = "configs/experiment_matrix.yam
                 "estimated_artifact_dir": str(evaluation_run_directory(run_id)),
             }
         )
-    return rows
+    return {"tta_seed_config": tta_seed_report, "cells": rows}
 
 
 # ---------------------------------------------------------------------------
@@ -626,27 +802,38 @@ def compute_validation_evaluation(
 
 def run_validation_evaluation(
     run_id: str,
-    tta_seed: int,
     matrix_path: str = "configs/experiment_matrix.yaml",
     device_resolver=None,
     root: str | Path = DEFAULT_EVALUATION_ROOT,
     training_root: str | Path = "artifacts/confirmatory",
     data_root: str | Path = "data/raw",
     evaluation_ledger_path=None,
+    tta_seed_config_path: str | Path = DEFAULT_TTA_SEED_CONFIG_PATH,
+    tta_seed_git_tracked_and_clean=_default_git_tracked_and_clean,
+    tta_seed_last_commit_for_path=_default_last_commit_for_path,
+    tta_seed_commit_is_ancestor=_default_commit_is_ancestor,
 ) -> dict[str, Any]:
     """Single entry point for validation-only TTA evaluation. Enforces, IN
-    ORDER: (1) resolve the canonical training completion (rejects every
-    ineligible attempt type -- see resolve_canonical_training_completion());
-    (2) derive the deterministic evaluation config/ID; (3) idempotent skip
-    check (metadata-only, before MPS/dataset/checkpoint/view-generation/
-    metric-calculation); (4) MPS device resolution (no CPU fallback --
-    device_resolver defaults to select_device('mps')); (5) load + verify
-    the canonical checkpoint read-only; (6) load the validation split ONLY;
-    (7) compute clean + per-view probabilities and every frozen condition/
-    aggregator/prefix metric; (8) persist + independently verify artifacts;
-    (9) append the terminal evaluation-ledger row.
+    ORDER: (1) load and exhaustively verify the frozen confirmatory TTA-
+    seed configuration (configs/validation_evaluation.yaml -- see
+    load_frozen_tta_seed_config()); (2) resolve the canonical training
+    completion (rejects every ineligible attempt type -- see
+    resolve_canonical_training_completion()); (3) derive the deterministic
+    evaluation config/ID (now including the seed config's SHA-256/freeze
+    commit/derivation digest); (4) idempotent skip check (metadata-only,
+    before MPS/dataset/checkpoint/view-generation/metric-calculation);
+    (5) MPS device resolution (no CPU fallback -- device_resolver defaults
+    to select_device('mps')); (6) load + verify the canonical checkpoint
+    read-only; (7) load the validation split ONLY; (8) compute clean +
+    per-view probabilities and every frozen condition/aggregator/prefix
+    metric; (9) persist + independently verify artifacts; (10) append the
+    terminal evaluation-ledger row.
 
-    A failed resolution/skip/authorization step (1)-(3) creates ZERO files
+    The `tta_seed_config_*` injectable parameters exist ONLY for synthetic
+    tests, mirroring authorize_block_d_cell()'s identical pattern -- there
+    is no CLI flag or environment variable that overrides them.
+
+    A failed seed-config/resolution/skip step (1)-(4) creates ZERO files
     and ZERO ledger rows.
     """
     from when_tta_hurts import ledger as ledger_module
@@ -657,13 +844,19 @@ def run_validation_evaluation(
     if evaluation_ledger_path is None:
         evaluation_ledger_path = ledger_module.VALIDATION_EVALUATION_LEDGER_PATH
 
-    resolved_tta_seed = resolve_confirmatory_tta_seed(tta_seed)
+    seed_cfg = load_frozen_tta_seed_config(
+        tta_seed_config_path,
+        git_tracked_and_clean=tta_seed_git_tracked_and_clean,
+        last_commit_for_path=tta_seed_last_commit_for_path,
+        commit_is_ancestor=tta_seed_commit_is_ancestor,
+    )
+    resolved_tta_seed = seed_cfg.confirmatory_tta_seed
 
     cell, training_result = resolve_canonical_training_completion(run_id, matrix_path)
 
     expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
     cfg = build_validation_evaluation_config(
-        cell, training_result, resolved_tta_seed, expanded.source_config_hash, _git_commit_hash()
+        cell, training_result, seed_cfg, expanded.source_config_hash, _git_commit_hash()
     )
     evaluation_id = compute_evaluation_id(cfg)
 
@@ -700,6 +893,9 @@ def run_validation_evaluation(
             "training_policy": cell.training_policy,
             "seed": cell.seed,
             "tta_seed": resolved_tta_seed,
+            "tta_seed_config_sha256": seed_cfg.config_file_sha256,
+            "tta_seed_freeze_commit": seed_cfg.freeze_commit,
+            "tta_seed_derivation_sha256": seed_cfg.derivation_sha256,
             "prefix_sequence": list(PREFIX_SEQUENCE),
             "aggregators": list(AGGREGATORS),
             "secondary_analyses": list(SECONDARY_ANALYSES),
@@ -714,6 +910,9 @@ def run_validation_evaluation(
             "dataset": cell.dataset,
             "resolution": cell.resolution,
             "tta_seed": resolved_tta_seed,
+            "tta_seed_config_sha256": seed_cfg.config_file_sha256,
+            "tta_seed_freeze_commit": seed_cfg.freeze_commit,
+            "tta_seed_derivation_sha256": seed_cfg.derivation_sha256,
             "n_views": MAX_VIEWS,
             "seed_formula": (
                 "sha256(tta_seed|dataset|resolution|sample_index|view_index)[:8 bytes] % (2**31-1)"

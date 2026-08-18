@@ -36,20 +36,22 @@ from when_tta_hurts.orchestrator import PilotOrExcludedSeedRunIdError, UnknownRu
 from when_tta_hurts.transforms.policies import build_policy
 from when_tta_hurts.validation_evaluation import EvaluationRunStatus as _RunStatus
 from when_tta_hurts.validation_evaluation import (
-    NoConfirmatoryTTASeedYetError,
+    FrozenTTASeedConfigError,
     ValidationEvaluationConfig,
     check_evaluation_skip,
     compute_evaluation_id,
     compute_validation_evaluation,
     finish_evaluation_attempt,
     list_evaluation_attempts,
+    load_frozen_tta_seed_config,
     plan_validation_evaluation,
     resolve_canonical_training_completion,
-    resolve_confirmatory_tta_seed,
     start_evaluation_attempt,
 )
 
 MATRIX_PATH = "configs/experiment_matrix.yaml"
+FROZEN_TTA_SEED = 1306178015
+REAL_TTA_SEED_CONFIG_PATH = "configs/validation_evaluation.yaml"
 
 
 def _synthetic_split(n=4, n_classes=3, resolution=28, dataset="pathmnist", seed=0):
@@ -62,22 +64,271 @@ def _synthetic_split(n=4, n_classes=3, resolution=28, dataset="pathmnist", seed=
 
 
 # ---------------------------------------------------------------------------
-# TTA seed resolution -- distinct from pilot's 271828
+# Frozen confirmatory TTA-seed configuration
 # ---------------------------------------------------------------------------
 
+_VALID_YAML_TEXT = """
+schema_version: "1.0"
+status: approved
+split: validation
+confirmatory_tta_seed: 1306178015
+derivation:
+  namespace: "when-tta-hurts|phase2b|confirmatory-tta|v1"
+  sha256_digest: "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd"
+  conversion_rule: "int(digest[:8], 16)"
+excluded_seeds:
+  pilot_tta_seed: 271828
+  pilot_training_seed: 314159
+  confirmatory_training_seeds: [0, 1, 2]
+prefix_sequence: [1, 2, 5, 10, 25, 50, 100]
+total_generated_views: 100
+primary_prefix: 50
+primary_aggregation: mean_probability
+policy_identifier: mixed
+"""
 
-def test_confirmatory_tta_seed_rejects_pilot_seed():
-    with pytest.raises(NoConfirmatoryTTASeedYetError):
-        resolve_confirmatory_tta_seed(271828)
+
+def _write_config(tmp_path, text=None, **overrides):
+    import yaml
+
+    if text is not None:
+        content = text
+    else:
+        data = yaml.safe_load(_VALID_YAML_TEXT)
+        for key, value in overrides.items():
+            data[key] = value
+        content = yaml.safe_dump(data)
+    path = tmp_path / "validation_evaluation.yaml"
+    path.write_text(content)
+    return path
 
 
-def test_confirmatory_tta_seed_rejects_missing():
-    with pytest.raises(NoConfirmatoryTTASeedYetError):
-        resolve_confirmatory_tta_seed(None)
+def _always_tracked_clean(path):
+    return True
 
 
-def test_confirmatory_tta_seed_accepts_distinct_value():
-    assert resolve_confirmatory_tta_seed(123456) == 123456
+def _commit_for(commit):
+    return lambda path: commit
+
+
+def _all_ancestors(commit, head):
+    return True
+
+
+def test_independent_seed_derivation_equals_frozen_value():
+    import hashlib
+
+    namespace = "when-tta-hurts|phase2b|confirmatory-tta|v1"
+    digest = hashlib.sha256(namespace.encode("utf-8")).hexdigest()
+    assert digest == "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd"
+    assert int(digest[:8], 16) == FROZEN_TTA_SEED == 1306178015
+
+
+@pytest.mark.parametrize("excluded", [0, 1, 2, 271828, 314159])
+def test_frozen_seed_differs_from_pilot_and_training_seeds(excluded):
+    assert FROZEN_TTA_SEED != excluded
+
+
+def test_valid_tracked_configuration_succeeds(tmp_path):
+    path = _write_config(tmp_path)
+    cfg = load_frozen_tta_seed_config(
+        path,
+        git_tracked_and_clean=_always_tracked_clean,
+        last_commit_for_path=_commit_for("c" * 40),
+        commit_is_ancestor=_all_ancestors,
+    )
+    assert cfg.confirmatory_tta_seed == FROZEN_TTA_SEED
+    assert cfg.prefix_sequence == (1, 2, 5, 10, 25, 50, 100)
+    assert cfg.primary_prefix == 50
+    assert cfg.primary_aggregation == "mean_probability"
+    assert cfg.policy_identifier == "mixed"
+    assert cfg.freeze_commit == "c" * 40
+
+
+def test_missing_configuration_fails(tmp_path):
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            tmp_path / "does_not_exist.yaml",
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_untracked_configuration_fails(tmp_path):
+    path = _write_config(tmp_path)
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=lambda p: False,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_dirty_configuration_fails(tmp_path):
+    path = _write_config(tmp_path)
+    calls = []
+
+    def dirty_check(p):
+        calls.append(p)
+        return False
+
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=dirty_check,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+    assert calls
+
+
+def test_uncommitted_configuration_fails(tmp_path):
+    """No commit in repository history for this path -- distinct from
+    'untracked' (git_tracked_and_clean can pass for a staged-but-never-
+    committed file in principle; last_commit_for_path returning None is
+    the authoritative 'never committed' signal)."""
+    path = _write_config(tmp_path)
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=lambda p: None,
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_malformed_configuration_fails(tmp_path):
+    path = _write_config(tmp_path, text="{not: valid: yaml: [")
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_draft_status_configuration_fails(tmp_path):
+    path = _write_config(tmp_path, status="draft")
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_wrong_seed_fails(tmp_path):
+    path = _write_config(tmp_path, confirmatory_tta_seed=999999999)
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_pilot_tta_seed_fails(tmp_path):
+    path = _write_config(tmp_path, confirmatory_tta_seed=271828)
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 314159])
+def test_training_and_pilot_seeds_fail(tmp_path, seed):
+    path = _write_config(tmp_path, confirmatory_tta_seed=seed)
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("prefix_sequence", [1, 2, 5]),
+        ("primary_prefix", 25),
+        ("primary_aggregation", "majority_vote"),
+        ("policy_identifier", "geometric"),
+        ("total_generated_views", 50),
+    ],
+)
+def test_altered_view_config_fails(tmp_path, field, value):
+    path = _write_config(tmp_path, **{field: value})
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_non_ancestor_freeze_commit_fails(tmp_path):
+    path = _write_config(tmp_path)
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=lambda commit, head: False,
+        )
+
+
+def test_head_may_be_descendant_of_freeze_commit(tmp_path):
+    """HEAD need not equal the freeze commit -- only ancestry is
+    required, and a later HEAD (a descendant) is exactly the expected
+    case in ordinary use."""
+    path = _write_config(tmp_path)
+    cfg = load_frozen_tta_seed_config(
+        path,
+        git_tracked_and_clean=_always_tracked_clean,
+        last_commit_for_path=_commit_for("c" * 40),
+        commit_is_ancestor=_all_ancestors,
+        head_commit="a_much_later_descendant_commit",
+    )
+    assert cfg.confirmatory_tta_seed == FROZEN_TTA_SEED
+
+
+def test_tampered_derivation_digest_fails(tmp_path):
+    """Recomputed SHA-256 of the namespace must match the recorded
+    digest -- a config claiming a different (wrong) digest fails even if
+    confirmatory_tta_seed itself happens to still read 1306178015."""
+    import yaml
+
+    data = yaml.safe_load(_VALID_YAML_TEXT)
+    data["derivation"]["sha256_digest"] = "0" * 64
+    path = tmp_path / "validation_evaluation.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(FrozenTTASeedConfigError):
+        load_frozen_tta_seed_config(
+            path,
+            git_tracked_and_clean=_always_tracked_clean,
+            last_commit_for_path=_commit_for("c" * 40),
+            commit_is_ancestor=_all_ancestors,
+        )
+
+
+def test_real_committed_configuration_loads_successfully():
+    """The actual, committed configs/validation_evaluation.yaml must load
+    and verify successfully against the REAL git repository state -- a
+    pure local file+git-metadata read, no MPS/dataset/checkpoint access."""
+    cfg = load_frozen_tta_seed_config(REAL_TTA_SEED_CONFIG_PATH)
+    assert cfg.confirmatory_tta_seed == FROZEN_TTA_SEED
+    assert len(cfg.freeze_commit) == 40
+    assert len(cfg.config_file_sha256) == 64
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +458,7 @@ def _cfg(**overrides):
         training_attempt=1,
         checkpoint_hash="deadbeef",
         split="validation",
-        tta_seed=123456,
+        tta_seed=1306178015,
         prefix_sequence=(1, 2, 5, 10, 25, 50, 100),
         aggregators=("mean_probability", "majority_vote", "confidence_weighted_average"),
         secondary_analyses=("scaling_curve",),
@@ -215,6 +466,9 @@ def _cfg(**overrides):
         protocol_commit="ce4c962",
         matrix_hash="abc",
         source_commit="def",
+        tta_seed_config_sha256="cfg_sha256_abc",
+        tta_seed_freeze_commit="c" * 40,
+        tta_seed_derivation_sha256="4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
     )
     base.update(overrides)
     return ValidationEvaluationConfig(**base)
@@ -226,6 +480,11 @@ def test_evaluation_id_deterministic():
     assert h1 == h2
 
 
+def test_production_evaluation_identity_uses_frozen_seed():
+    cfg = _cfg()
+    assert cfg.tta_seed == 1306178015
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -235,6 +494,9 @@ def test_evaluation_id_deterministic():
         ("aggregators", ("mean_probability",)),
         ("policy", "geometric"),
         ("matrix_hash", "different"),
+        ("tta_seed_config_sha256", "different_sha"),
+        ("tta_seed_freeze_commit", "d" * 40),
+        ("tta_seed_derivation_sha256", "0" * 64),
     ],
 )
 def test_evaluation_id_changes_with_each_field(field, value):
@@ -403,10 +665,19 @@ def test_evaluation_ledger_header_only_file_creation(tmp_path):
 
 def test_plan_mode_side_effect_free(tmp_path):
     before = set(tmp_path.rglob("*"))
-    rows = plan_validation_evaluation(MATRIX_PATH)
+    report = plan_validation_evaluation(MATRIX_PATH)
     after = set(tmp_path.rglob("*"))
     assert before == after
-    assert len(rows) == 39
+    assert len(report["cells"]) == 39
+
+
+def test_plan_mode_reports_frozen_seed_config_hash_and_freeze_commit():
+    report = plan_validation_evaluation(MATRIX_PATH)
+    seed_report = report["tta_seed_config"]
+    assert "error" not in seed_report
+    assert seed_report["confirmatory_tta_seed"] == 1306178015
+    assert len(seed_report["config_file_sha256"]) == 64
+    assert len(seed_report["freeze_commit"]) == 40
 
 
 def test_plan_mode_never_initializes_mps_or_touches_dataset():
@@ -705,7 +976,10 @@ def _valid_metadata():
         "normalization": "batchnorm",
         "training_policy": "none",
         "seed": 0,
-        "tta_seed": 123456,
+        "tta_seed": 1306178015,
+        "tta_seed_config_sha256": "cfgsha",
+        "tta_seed_freeze_commit": "c" * 40,
+        "tta_seed_derivation_sha256": "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
         "prefix_sequence": [1, 2, 5, 10, 25, 50, 100],
         "aggregators": ["mean_probability"],
         "secondary_analyses": ["scaling_curve"],
@@ -722,7 +996,10 @@ def _valid_view_manifest():
     return {
         "dataset": "pathmnist",
         "resolution": 28,
-        "tta_seed": 123456,
+        "tta_seed": 1306178015,
+        "tta_seed_config_sha256": "cfgsha",
+        "tta_seed_freeze_commit": "c" * 40,
+        "tta_seed_derivation_sha256": "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
         "n_views": 100,
         "seed_formula": "sha256(...)",
         "sample_indices": [0, 1, 2],

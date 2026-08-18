@@ -1,33 +1,39 @@
 #!/usr/bin/env python3
-"""Phase 2B.4A: validation-only TTA evaluation CLI.
+"""Phase 2B.4A/2B.4B: validation-only TTA evaluation CLI.
 
 Modes:
-    plan                 -- side-effect-free: lists all eligible training
-                             cells, their canonical training completion (if
-                             any), and the required frozen analyses. Never
-                             initializes MPS, opens a dataset/checkpoint,
-                             creates a file/directory, writes a ledger, or
-                             computes a prediction.
-    evaluate-validation   -- exact single-run evaluation:
-                             --run-id <exact-training-run-id> --tta-seed N.
-                             Dispatches to validation_evaluation.run_validation_evaluation(),
-                             which enforces canonical-checkpoint resolution,
-                             deterministic evaluation identity, idempotent
-                             skip, and the full frozen validation-only
-                             computation before writing any artifact.
+    plan                 -- side-effect-free: reports the frozen
+                             confirmatory TTA seed/config hash/freeze
+                             commit, then lists all eligible training
+                             cells, their canonical training completion
+                             (if any), and the required frozen analyses.
+                             Never initializes MPS, opens a dataset/
+                             checkpoint, creates a file/directory, writes
+                             a ledger, or computes a prediction.
+    evaluate-validation   -- exact single-run evaluation: --run-id
+                             <exact-training-run-id>. Dispatches to
+                             validation_evaluation.run_validation_evaluation(),
+                             which loads and exhaustively verifies the
+                             frozen TTA-seed configuration
+                             (configs/validation_evaluation.yaml) BEFORE
+                             canonical-checkpoint resolution, evaluation
+                             identity, idempotent skip, or anything else.
 
-There is no --block/--all-cells route in this phase (a single real canary
-must pass first), and no flag anywhere in this script exists to override
-authorization, the split, the augmentation policy, the prefix sequence, or
-to select a synthetic production backend. No environment variable is read
-anywhere in this script or the module it calls. The evaluated split is
-always "validation" -- there is no split argument
-of any kind.
+The confirmatory TTA seed is loaded EXCLUSIVELY from the tracked,
+committed, approved configs/validation_evaluation.yaml (see
+docs/phase2b_validation_evaluation_freeze.md) -- there is no --tta-seed
+flag, no alternate-config-path flag, and no environment variable that
+supplies or overrides it anywhere in this script. There is no
+--block/--all-cells route in this phase (a single real canary must pass
+first), and no flag anywhere in this script exists to override
+authorization, the split, the augmentation policy, or the prefix
+sequence. The evaluated split is always "validation" -- there is no
+split argument of any kind.
 
 Usage:
     uv run python scripts/run_validation_evaluation.py plan
     uv run python scripts/run_validation_evaluation.py evaluate-validation \
-        --run-id A-pathmnist-28px-batchnorm-policy-none-s0 --tta-seed <N>
+        --run-id A-pathmnist-28px-batchnorm-policy-none-s0
 """
 
 from __future__ import annotations
@@ -50,8 +56,8 @@ from when_tta_hurts.result_artifacts import PersistenceVerificationError
 from when_tta_hurts.run_identity import ConflictingCompletedRunError
 from when_tta_hurts.validation_evaluation import (
     EvaluationStaleAttemptError,
+    FrozenTTASeedConfigError,
     NoCanonicalTrainingCompletionError,
-    NoConfirmatoryTTASeedYetError,
     plan_validation_evaluation,
     run_validation_evaluation,
 )
@@ -71,26 +77,23 @@ def main() -> int:
     parser.add_argument("mode", choices=["plan", "evaluate-validation"])
     parser.add_argument("--matrix", default="configs/experiment_matrix.yaml")
     parser.add_argument("--run-id", action=_SingleValueAction, default=None)
-    parser.add_argument("--tta-seed", type=int, action=_SingleValueAction, default=None)
     args = parser.parse_args()
 
     if args.mode == "plan":
-        rows = plan_validation_evaluation(args.matrix)
-        print(json.dumps(rows, indent=2, default=str))
+        report = plan_validation_evaluation(args.matrix)
+        print(json.dumps(report, indent=2, default=str))
         return 0
 
     if args.mode == "evaluate-validation":
         if not args.run_id:
             parser.error("evaluate-validation requires --run-id.")
-        if args.tta_seed is None:
-            parser.error("evaluate-validation requires --tta-seed.")
         try:
-            result = run_validation_evaluation(args.run_id, args.tta_seed, matrix_path=args.matrix)
+            result = run_validation_evaluation(args.run_id, matrix_path=args.matrix)
         except (
             UnknownRunIdError,
             PilotOrExcludedSeedRunIdError,
             NoCanonicalTrainingCompletionError,
-            NoConfirmatoryTTASeedYetError,
+            FrozenTTASeedConfigError,
             BlockDAuthorizationError,
             DeviceUnavailableError,
             EvaluationStaleAttemptError,
