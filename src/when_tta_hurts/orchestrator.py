@@ -110,6 +110,22 @@ class AmbiguousCanonicalCompletionError(RuntimeError):
     resolution."""
 
 
+class StaleAttemptError(RuntimeError):
+    """Raised when an earlier attempt for this run ID is nonterminal
+    (status 'running' or 'planned' -- i.e. never reached completed/failed/
+    aborted) AND has no confirmatory-ledger row of any kind. The runner
+    must NEVER silently start a new attempt in this situation -- doing so
+    is exactly what caused an unintended duplicate real-MPS training run
+    during Phase 2B.3B. Call reconcile_stale_attempt() first, with
+    independent evidence that the stale attempt has genuinely stopped."""
+
+
+# Terminal confirmatory-attempt statuses -- anything else (running,
+# planned) is nonterminal and, if unledgered, blocks further execution
+# for that run ID until explicitly reconciled.
+_TERMINAL_ATTEMPT_STATUSES = frozenset({"completed", "failed", "aborted"})
+
+
 class DirtyWorkingTreeError(RuntimeError):
     """Raised when the working tree contains anything other than a
     verified, append-only extension of an approved research ledger --
@@ -349,12 +365,13 @@ def check_confirmatory_skip(
     cell: MatrixCell,
     root: str | Path = "artifacts/confirmatory",
     amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
 ) -> CellTrainResult | None:
     """Determine whether a canonical-eligible matching completion already
     exists, WITHOUT touching MPS, checksums, datasets, DataLoaders,
     models, or ledger append -- this function only reads run_identity's
     status.json files, artifact_manifest.json files, and the (small,
-    local) amendments ledger.
+    local) amendments/confirmatory ledgers.
 
     Considers EVERY attempt for this run ID, in numeric order (not just
     the first) -- see list_attempts(). This matters because an early
@@ -364,9 +381,17 @@ def check_confirmatory_skip(
     would incorrectly conclude "not eligible, proceed to train" forever.
 
     Algorithm:
+    0. FIRST, for every attempt (regardless of status): if it is
+       nonterminal (status "running" or "planned") AND has no
+       confirmatory-ledger row of any kind, raise StaleAttemptError. Since
+       this function always runs before start_attempt() for the CURRENT
+       invocation, any nonterminal attempt found here can only be a
+       leftover from a PRIOR invocation -- reconcile_stale_attempt() must
+       be called first. This is what prevents the runner from silently
+       starting attempt_N+1 while attempt_N sits abandoned mid-training.
     1. Enumerate every attempt, numeric order.
-    2. Ignore anything not status=="completed" (failed/aborted/running/
-       planned attempts are never skip candidates).
+    2. Ignore anything not status=="completed" (failed/aborted attempts
+       are never skip candidates).
     3. Any completed attempt with a DIFFERENT config_hash than the current
        cell is a hard failure (protocol drift), regardless of eligibility.
     4. Among completed, matching-hash attempts, exclude any marked
@@ -385,10 +410,23 @@ def check_confirmatory_skip(
     run_id = cell.run_id()
     this_hash = cell_config_hash(cell)
 
+    all_attempts = list_attempts(cell, root)
+    for status in all_attempts:
+        if status.get("status") not in _TERMINAL_ATTEMPT_STATUSES:
+            if not ledger_module.has_confirmatory_row(
+                run_id, status["attempt_number"], confirmatory_ledger_path
+            ):
+                raise StaleAttemptError(
+                    f"Run {run_id} attempt_{status['attempt_number']:03d} is nonterminal "
+                    f"(status='{status.get('status')}') and has no confirmatory-ledger row -- "
+                    f"refusing to start a new attempt. Call reconcile_stale_attempt() first, "
+                    f"with independent evidence that this attempt has genuinely stopped."
+                )
+
     eligible_matching_candidates = []
-    for status in list_attempts(cell, root):
+    for status in all_attempts:
         if status.get("status") != RunStatus.COMPLETED.value:
-            continue  # failed/aborted/running/planned attempts are never skip candidates
+            continue  # failed/aborted attempts are never skip candidates
         if status["config_hash"] != this_hash:
             raise ConflictingCompletedRunError(
                 f"Run {run_id} has a completed attempt_{status['attempt_number']:03d} with a "
@@ -432,6 +470,90 @@ def check_confirmatory_skip(
         reason="matching completed, canonical-eligible, artifact-verified attempt already exists",
         config_hash=selected["config_hash"],
         manifest_verified=True,
+    )
+
+
+def reconcile_stale_attempt(
+    cell: MatrixCell,
+    attempt_number: int,
+    reason: str,
+    confirmed_not_running: bool,
+    recorded_at: str,
+    root: str | Path = "artifacts/confirmatory",
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
+    protocol_commit: str = FROZEN_PROTOCOL_COMMIT,
+) -> str:
+    """Explicit reconciliation for an attempt that check_confirmatory_skip
+    has identified (via StaleAttemptError) as nonterminal and unledgered.
+
+    Appends exactly ONE terminal status="aborted" confirmatory-ledger row
+    for (cell.run_id(), attempt_number), via ledger.append_confirmatory_entry
+    -- which is itself idempotent: an identical repeat call (same
+    reason/recorded_at) returns "duplicate_ignored"; a call with DIFFERENT
+    content for the same (run_id, attempt_number) raises LedgerConflictError
+    (never silently overwritten). This function never edits, deletes, or
+    creates anything in the attempt directory -- it only reads status.json
+    and appends to the ledger. status="aborted" structurally can never be
+    selected as canonical (check_confirmatory_skip only considers
+    status=="completed" as a candidate).
+
+    Fails closed:
+    - `confirmed_not_running` must be explicitly True. Reconciliation
+      always refuses by default -- the caller must have independent
+      evidence (outside this codebase, e.g. confirming no process is
+      executing the attempt) that it has genuinely stopped, not merely
+      assume so because it looks old.
+    - `reason` must be non-empty (an evidence-based explanation).
+    - The targeted attempt must exist and currently be nonterminal
+      (status "running" or "planned"); an already-terminal attempt must
+      go through its normal path, not reconciliation.
+    """
+    if not confirmed_not_running:
+        raise StaleAttemptError(
+            f"Refusing to reconcile {cell.run_id()} attempt_{attempt_number:03d}: the "
+            f"attempt may still be running. Pass confirmed_not_running=True only after "
+            f"obtaining independent evidence that it has genuinely stopped."
+        )
+    if not reason or not reason.strip():
+        raise ValueError("reconcile_stale_attempt requires a non-empty, evidence-based reason.")
+
+    run_id = cell.run_id()
+    attempt_dir = run_directory(cell, root) / f"attempt_{attempt_number:03d}"
+    status_path = attempt_dir / "status.json"
+    if not status_path.exists():
+        raise StaleAttemptError(
+            f"No such attempt: {run_id} attempt_{attempt_number:03d} (status.json not found)."
+        )
+    status = json.loads(status_path.read_text())
+    if status.get("status") in _TERMINAL_ATTEMPT_STATUSES:
+        raise StaleAttemptError(
+            f"{run_id} attempt_{attempt_number:03d} already has terminal status "
+            f"'{status.get('status')}' -- reconciliation is only for nonterminal "
+            f"(running/planned) attempts."
+        )
+
+    return ledger_module.append_confirmatory_entry(
+        ledger_path=confirmatory_ledger_path,
+        run_id=run_id,
+        attempt_id=attempt_number,
+        block=cell.block,
+        config_hash=status.get("config_hash", ""),
+        protocol_commit=protocol_commit,
+        dataset=cell.dataset,
+        model=cell.model,
+        resolution=cell.resolution,
+        normalization=cell.normalization,
+        training_policy=cell.training_policy,
+        seed=cell.seed,
+        split="validation",
+        status="aborted",
+        checkpoint_hash="",
+        started_at=status.get("started_at", ""),
+        ended_at="",
+        runtime_seconds="",
+        failure_reason=reason,
+        validation_metrics_observed=False,
+        test_metrics_observed=False,
     )
 
 
@@ -485,7 +607,7 @@ def run_train_validation_cell(
             f"reruns after test metrics exist are never permitted."
         )
 
-    skip = check_confirmatory_skip(cell, root, amendments_ledger_path)
+    skip = check_confirmatory_skip(cell, root, amendments_ledger_path, confirmatory_ledger_path)
     if skip is not None:
         return skip
     this_hash = cell_config_hash(cell)
@@ -718,7 +840,7 @@ def run_canary_cell(
     """
     cell = resolve_canary_run_id(run_id, matrix_path)
 
-    skip = check_confirmatory_skip(cell, root, amendments_ledger_path)
+    skip = check_confirmatory_skip(cell, root, amendments_ledger_path, confirmatory_ledger_path)
     if skip is not None:
         return skip
 
@@ -832,7 +954,9 @@ def run_block_cells(
     # MPS/checksum/dataset/model/DataLoader activity for any cell.
     precomputed_skips: dict[str, CellTrainResult | None] = {}
     for cell in cells:
-        precomputed_skips[cell.run_id()] = check_confirmatory_skip(cell, root, amendments_ledger_path)
+        precomputed_skips[cell.run_id()] = check_confirmatory_skip(
+            cell, root, amendments_ledger_path, confirmatory_ledger_path
+        )
 
     actual_pending = sum(1 for skip in precomputed_skips.values() if skip is None)
     if actual_pending != expected_pending:
@@ -887,6 +1011,7 @@ def verify_block_completions(
     matrix_path: str = "configs/experiment_matrix.yaml",
     root: str = "artifacts/confirmatory",
     amendments_ledger_path: str | Path = ledger_module.AMENDMENTS_LEDGER_PATH,
+    confirmatory_ledger_path: str | Path = ledger_module.CONFIRMATORY_LEDGER_PATH,
 ) -> dict:
     """METADATA-ONLY block completion report. Never initializes MPS, never
     verifies/downloads/loads any dataset, never constructs a model or
@@ -904,15 +1029,19 @@ def verify_block_completions(
         )
 
     cell_reports = []
-    missing, ambiguous, corrupt = [], [], []
+    missing, ambiguous, corrupt, stale = [], [], [], []
     canonical_count = 0
     for cell in cells:
         run_id = cell.run_id()
         try:
-            skip = check_confirmatory_skip(cell, root, amendments_ledger_path)
+            skip = check_confirmatory_skip(cell, root, amendments_ledger_path, confirmatory_ledger_path)
         except AmbiguousCanonicalCompletionError as e:
             ambiguous.append(run_id)
             cell_reports.append({"run_id": run_id, "status": "ambiguous", "error": str(e)})
+            continue
+        except StaleAttemptError as e:
+            stale.append(run_id)
+            cell_reports.append({"run_id": run_id, "status": "stale", "error": str(e)})
             continue
         except (ConflictingCompletedRunError, PersistenceVerificationError) as e:
             corrupt.append(run_id)
@@ -942,6 +1071,7 @@ def verify_block_completions(
         "missing": missing,
         "ambiguous": ambiguous,
         "corrupt": corrupt,
+        "stale": stale,
         "failed_canonical": [],  # reserved; corrupt/ambiguous cover all current failure modes
         "cells": cell_reports,
     }

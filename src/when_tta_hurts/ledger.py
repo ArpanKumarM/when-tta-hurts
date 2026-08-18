@@ -95,6 +95,18 @@ def _read_existing_rows(ledger_path: str | Path) -> list[dict[str, Any]]:
         return list(csv.DictReader(f))
 
 
+def has_confirmatory_row(
+    run_id: str, attempt_id: int, ledger_path: str | Path = CONFIRMATORY_LEDGER_PATH
+) -> bool:
+    """True iff ANY row (any status -- completed/failed/aborted) exists in
+    the confirmatory ledger for (run_id, attempt_id). Used to detect
+    attempts that are nonterminal on disk but were never reconciled."""
+    for row in _read_existing_rows(ledger_path):
+        if row.get("run_id") == run_id and row.get("attempt_id") == str(attempt_id):
+            return True
+    return False
+
+
 def append_pilot_entry(
     *,
     run_id: str,

@@ -212,7 +212,7 @@ def test_no_factories_invoked_during_skip(tmp_path):
     import inspect
 
     sig = inspect.signature(check_confirmatory_skip)
-    assert set(sig.parameters) == {"cell", "root", "amendments_ledger_path"}
+    assert set(sig.parameters) == {"cell", "root", "amendments_ledger_path", "confirmatory_ledger_path"}
 
     skip = check_confirmatory_skip(CELL, root, amendments_path)
     assert skip is not None and skip.attempt_number == n1
