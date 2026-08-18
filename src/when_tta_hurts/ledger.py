@@ -6,6 +6,7 @@ regardless of run outcome -- see CLAUDE.md.
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,30 @@ DEFAULT_LEDGER_PATH = Path("artifacts/ledger.csv")
 # untouched while still recording the incident append-only. See
 # docs/pilot_audit.md section A for the cross-reference.
 INCIDENTS_LEDGER_PATH = Path("artifacts/ledger_incidents.csv")
+
+# Separate append-only ledger for confirmatory (Phase 2B) runs -- kept
+# separate from both DEFAULT_LEDGER_PATH (pilot schema) and
+# INCIDENTS_LEDGER_PATH (incident schema) for the same column-alignment
+# reason documented above: a confirmatory row has a materially different
+# field set (attempt_id, block, protocol_commit, artifact hashes, ...)
+# than a pilot row, and csv.DictWriter's header is fixed by whichever row
+# writes it first. Existing ledger.csv/ledger_incidents.csv rows and
+# schemas are completely unaffected by this file's existence.
+CONFIRMATORY_LEDGER_PATH = Path("artifacts/ledger_confirmatory.csv")
+
+
+class LedgerConflictError(RuntimeError):
+    """Raised when append_confirmatory_entry is called for a (run_id,
+    attempt_id) that already has a row with DIFFERENT content -- this is a
+    hard failure, never a silent overwrite."""
+
+
+def _read_existing_rows(ledger_path: str | Path) -> list[dict[str, Any]]:
+    path = Path(ledger_path)
+    if not path.exists():
+        return []
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
 
 
 def append_pilot_entry(
@@ -123,3 +148,82 @@ def append_incident_entry(
         "notes": notes,
     }
     append_ledger_row(row, ledger_path)
+
+
+def append_confirmatory_entry(
+    *,
+    run_id: str,
+    attempt_id: int,
+    block: str,
+    config_hash: str,
+    protocol_commit: str,
+    dataset: str,
+    model: str,
+    resolution: int,
+    normalization: str,
+    training_policy: str,
+    seed: int,
+    split: str,
+    status: str,
+    checkpoint_hash: str,
+    started_at: float,
+    ended_at: float,
+    runtime_seconds: float,
+    failure_reason: str = "",
+    validation_metrics_observed: bool = False,
+    test_metrics_observed: bool = False,
+    ledger_path: str | Path = CONFIRMATORY_LEDGER_PATH,
+) -> str:
+    """Append one confirmatory-run row. Always tags confirmatory=true.
+
+    Idempotency: keyed on (run_id, attempt_id).
+    - No existing row for this (run_id, attempt_id): appends, returns "appended".
+    - Existing row with IDENTICAL content: no-op, returns "duplicate_ignored"
+      (idempotent -- calling this twice with the same facts is safe).
+    - Existing row with DIFFERENT content: raises LedgerConflictError (hard
+      failure -- never silently overwritten).
+
+    Per your requirement, `split` must never be "test" unless
+    test_metrics_observed reflects a properly authorized final evaluation
+    -- this function does not itself enforce the authorization gate (that
+    lives in authorization.py); it only records what is asserted by the
+    caller, and is not a substitute for that gate.
+    """
+    row = {
+        "confirmatory": True,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "block": block,
+        "config_hash": config_hash,
+        "protocol_commit": protocol_commit,
+        "dataset": dataset,
+        "model": model,
+        "resolution": resolution,
+        "normalization": normalization,
+        "training_policy": training_policy,
+        "seed": seed,
+        "split": split,
+        "status": status,
+        "checkpoint_hash": checkpoint_hash,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "runtime_seconds": runtime_seconds,
+        "failure_reason": failure_reason,
+        "validation_metrics_observed": validation_metrics_observed,
+        "test_metrics_observed": test_metrics_observed,
+    }
+    row_str = {k: str(v) for k, v in row.items()}
+
+    existing_rows = _read_existing_rows(ledger_path)
+    for existing in existing_rows:
+        if existing.get("run_id") == run_id and existing.get("attempt_id") == str(attempt_id):
+            if existing == row_str:
+                return "duplicate_ignored"
+            raise LedgerConflictError(
+                f"Confirmatory ledger already has a DIFFERENT row for run_id={run_id}, "
+                f"attempt_id={attempt_id}. Existing: {existing}. New: {row_str}. "
+                f"Hard failure -- refusing to append a conflicting duplicate."
+            )
+
+    append_ledger_row(row, ledger_path)
+    return "appended"

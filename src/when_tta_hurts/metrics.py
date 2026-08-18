@@ -85,6 +85,18 @@ def harm_rescue_rates(
     }
 
 
+def brier_score(logits: np.ndarray, labels: np.ndarray) -> float:
+    """Frozen multiclass Brier score, per docs/phase2b_protocol.md sec.3:
+    mean over samples of [sum over classes of (predicted_probability - one_hot_label)^2].
+    """
+    probs = softmax(logits)
+    n, c = probs.shape
+    one_hot = np.zeros((n, c))
+    one_hot[np.arange(n), labels] = 1.0
+    per_sample = np.sum((probs - one_hot) ** 2, axis=-1)
+    return float(np.mean(per_sample))
+
+
 def compute_all_metrics(logits: np.ndarray, labels: np.ndarray) -> dict[str, float]:
     return {
         "accuracy": accuracy(logits, labels),

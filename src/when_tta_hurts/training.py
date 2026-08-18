@@ -1,7 +1,10 @@
-"""Training loop for the Phase 2A pilot: Adam + cosine annealing + early
-stopping on validation accuracy, restoring the best checkpoint. Deliberately
-minimal -- only what docs/pilot_protocol.md's frozen training spec requires,
-not a general-purpose trainer.
+"""Training loop for Phase 2A pilot AND Phase 2B confirmatory runs:
+Adam + cosine annealing + early stopping on validation accuracy, restoring
+the best checkpoint. Extended (Phase 2B.2) with an OPTIONAL training-time
+augmentation hook (Block B only), OOM detection, and an optional wall-clock
+time limit (Block D's 90-minute gate) -- all backward compatible: with no
+augmentation_policy and no max_training_seconds, behavior for existing
+callers (the Phase 2A pilot) is completely unchanged.
 """
 
 from __future__ import annotations
@@ -13,6 +16,19 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+
+from when_tta_hurts.transforms.policies import sample_deterministic_view
+
+
+class TrainingOOMError(RuntimeError):
+    """Raised when an MPS/CUDA out-of-memory error is detected during
+    training, distinct from a generic RuntimeError so callers can route it
+    to incident logging specifically."""
+
+
+class TrainingTimeoutError(RuntimeError):
+    """Raised when training exceeds max_training_seconds (checked at epoch
+    boundaries) -- used for Block D's 90-minute-per-run stop."""
 
 
 @dataclass
@@ -31,6 +47,11 @@ class TrainResult:
         default_factory=list
     )  # per-epoch: {epoch, train_loss, val_loss, val_accuracy}
     training_time_seconds: float = 0.0
+
+
+def _is_oom_error(e: RuntimeError) -> bool:
+    msg = str(e).lower()
+    return "out of memory" in msg or "mps backend out of memory" in msg
 
 
 def _evaluate_loss_accuracy(
@@ -61,9 +82,30 @@ def train_model(
     learning_rate: float = 1e-3,
     weight_decay: float = 0.0,
     early_stopping: EarlyStoppingConfig | None = None,
+    augmentation_policy: nn.Module | None = None,
+    augmentation_seed: int | None = None,
+    max_training_seconds: float | None = None,
 ) -> TrainResult:
+    """
+    augmentation_policy: if given (Block B only), applied EXACTLY ONCE per
+      training sample per step -- one augmented view replaces the clean
+      batch for that step, not an additional copy. Augmentation runs on
+      CPU (per the measured MPS performance fix in evaluation/tta.py),
+      then the single augmented batch is moved to `device`. If None
+      (default, matching all prior callers including the Phase 2A pilot),
+      training is completely unaugmented -- unchanged behavior.
+    augmentation_seed: required if augmentation_policy is given; advances
+      by one per training step so augmentation is deterministic and
+      reproducible but not identical across steps.
+    max_training_seconds: if given, raises TrainingTimeoutError as soon as
+      an epoch boundary is crossed after this many seconds have elapsed
+      (Block D's 90-minute-per-run stop). None (default) = no limit,
+      matching all prior callers.
+    """
     if early_stopping is None:
         early_stopping = EarlyStoppingConfig()
+    if augmentation_policy is not None and augmentation_seed is None:
+        raise ValueError("augmentation_seed is required when augmentation_policy is given")
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -78,21 +120,39 @@ def train_model(
     t_start = time.perf_counter()
     epochs_completed = 0
     early_stopped = False
+    step_counter = 0
 
     for epoch in range(1, max_epochs + 1):
+        if max_training_seconds is not None and (time.perf_counter() - t_start) > max_training_seconds:
+            raise TrainingTimeoutError(
+                f"Training exceeded max_training_seconds={max_training_seconds} "
+                f"at epoch {epoch} (elapsed={time.perf_counter() - t_start:.1f}s)."
+            )
+
         model.train()
         train_loss_sum = 0.0
         train_n = 0
         for x, y in train_loader:
+            if augmentation_policy is not None:
+                # Exactly once per sample per step: one augmented view
+                # replaces x, no double application, CPU augmentation then
+                # single device transfer.
+                x = sample_deterministic_view(x, augmentation_policy, seed=augmentation_seed + step_counter)
+                step_counter += 1
             x = x.to(device)
             y = y.to(device).long().view(-1)
             optimizer.zero_grad()
-            logits = model(x)
-            loss = criterion(logits, y)
-            if not torch.isfinite(loss):
-                raise RuntimeError(f"non-finite training loss at epoch {epoch}: {loss.item()}")
-            loss.backward()
-            optimizer.step()
+            try:
+                logits = model(x)
+                loss = criterion(logits, y)
+                if not torch.isfinite(loss):
+                    raise RuntimeError(f"non-finite training loss at epoch {epoch}: {loss.item()}")
+                loss.backward()
+                optimizer.step()
+            except RuntimeError as e:
+                if _is_oom_error(e):
+                    raise TrainingOOMError(f"OOM during training at epoch {epoch}: {e}") from e
+                raise
             train_loss_sum += loss.item() * x.size(0)
             train_n += x.size(0)
         scheduler.step()
