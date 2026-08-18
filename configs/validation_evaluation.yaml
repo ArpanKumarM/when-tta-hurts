@@ -1,0 +1,57 @@
+# Phase 2B.4B: frozen confirmatory validation-evaluation configuration.
+# See docs/phase2b_validation_evaluation_freeze.md for the full freeze
+# rationale, derivation, and non-negotiability statement. This file
+# SUPPLEMENTS docs/phase2b_protocol.md -- it does not rewrite, override,
+# or reinterpret anything in that document or in
+# configs/experiment_matrix.yaml, both of which remain byte-identical to
+# their already-frozen, already-executed-against content.
+#
+# Status values (mirrors configs/experiment_matrix.yaml's convention):
+#   draft    -- proposed, not reviewed -- production MUST reject this.
+#   approved -- signed off, may be used by the evaluation runner.
+schema_version: "1.0"
+status: approved
+
+split: validation  # this configuration governs validation-only evaluation; never test
+
+# --- Frozen confirmatory TTA seed -----------------------------------------
+# docs/phase2b_protocol.md sec.1 explicitly deferred this value ("exact
+# confirmatory TTA seed value(s) to be set when the runner is
+# implemented -- not fixed by this document"). It is fixed HERE, by a
+# mechanical, pre-registered derivation -- not chosen, tried, or compared
+# against any observed outcome (no confirmatory prediction of any kind
+# existed at the time this file was written -- see the freeze document).
+confirmatory_tta_seed: 1306178015
+
+derivation:
+  namespace: "when-tta-hurts|phase2b|confirmatory-tta|v1"
+  sha256_digest: "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd"
+  conversion_rule: >
+    Interpret the first 8 hexadecimal digits of the SHA-256 digest above
+    ("4ddab1df") as an unsigned base-16 integer -- int(digest[:8], 16).
+    This yields 1306178015, the frozen confirmatory_tta_seed above.
+
+# --- Explicit exclusions (must differ from confirmatory_tta_seed) --------
+excluded_seeds:
+  pilot_tta_seed: 271828        # docs/pilot_protocol.md; never reused as a confirmatory TTA seed
+  pilot_training_seed: 314159   # permanently excluded from ALL confirmatory work (training and evaluation)
+  confirmatory_training_seeds: [0, 1, 2]  # configs/experiment_matrix.yaml's seeds.confirmatory -- a
+    # TRAINING-seed list, structurally distinct from the single TTA seed above; listed here only so
+    # production can verify confirmatory_tta_seed collides with none of them.
+
+# --- Frozen view/aggregation configuration (must match validation_evaluation.py exactly) ---
+prefix_sequence: [1, 2, 5, 10, 25, 50, 100]  # docs/phase2b_protocol.md sec.3's frozen nested-prefix sequence
+total_generated_views: 100
+primary_prefix: 50
+primary_aggregation: mean_probability
+policy_identifier: mixed  # the source paper's headline TTA policy, per docs/experimental_protocol.md
+
+# Reference to the exact frozen transform-parameter table this policy
+# identifier resolves to -- not a duplicate/independent copy of the
+# parameters, so amending docs/experimental_protocol.md's frozen table
+# (which requires its own protocol amendment) is the only way to change
+# what "mixed" means; this file cannot silently drift from it.
+policy_reference:
+  module: "when_tta_hurts.transforms.policies"
+  function: "build_policy"
+  frozen_parameter_table: "docs/experimental_protocol.md#frozen-augmentation-parameters"
