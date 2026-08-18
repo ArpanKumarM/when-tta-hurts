@@ -171,6 +171,12 @@ APPROVED_APPEND_ONLY_LEDGER_PATHS = frozenset(
         "artifacts/ledger_incidents.csv",
         "artifacts/ledger_confirmatory.csv",
         "artifacts/ledger_amendments.csv",
+        # Phase 2B.4 validation-evaluation ledger (ledger.py::
+        # VALIDATION_EVALUATION_LEDGER_PATH) -- same append-only,
+        # human-auditable-CSV rationale as the four training ledgers
+        # above, so a legitimate sequential evaluation's own ledger
+        # append does not itself trip the clean-tree guard.
+        "artifacts/ledger_validation_evaluation.csv",
     }
 )
 

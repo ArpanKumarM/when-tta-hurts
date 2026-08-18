@@ -61,6 +61,43 @@ def _all_ancestors(commit, head):
     return True
 
 
+class _ProductionPathReachedInTestError(AssertionError):
+    """Raised by the autouse guard below -- a validation-evaluation CLI
+    test reached a real MPS/dataset/checkpoint-loading call without
+    patching run_validation_evaluation or supplying fake dependencies."""
+
+
+def _guard_explode(*args, **kwargs):
+    raise _ProductionPathReachedInTestError(
+        "PRODUCTION PATH REACHED IN TEST: a validation-evaluation CLI test attempted to touch a "
+        "real MPS/dataset/checkpoint path. Patch run_validation_evaluation with a fake, or inject "
+        "fake device_resolver/tta_seed_* dependencies, before calling cli_module.main()."
+    )
+
+
+@pytest.fixture(autouse=True)
+def _guard_against_real_evaluation(monkeypatch):
+    """Safety net, in addition to (not instead of) each test's own
+    patching discipline: even if a test forgets to patch
+    run_validation_evaluation and reaches the REAL function with no
+    faked device_resolver, this fixture makes the underlying MPS/
+    dataset/checkpoint entry points explode loudly instead of silently
+    running for real. Patches the SOURCE module attributes production
+    code actually calls (select_device is imported locally inside
+    run_validation_evaluation at call time, so patching
+    when_tta_hurts.devices.select_device is sufficient; the other two
+    are imported at validation_evaluation module load time, so the
+    LOCAL bindings inside that module must be patched instead)."""
+    monkeypatch.setattr("when_tta_hurts.devices.select_device", _guard_explode)
+    monkeypatch.setattr(
+        "when_tta_hurts.validation_evaluation.load_validation_evaluation_split", _guard_explode
+    )
+    monkeypatch.setattr(
+        "when_tta_hurts.validation_evaluation.load_and_verify_canonical_checkpoint", _guard_explode
+    )
+    yield
+
+
 def test_plan_mode_runs_and_is_side_effect_free(cli_module, monkeypatch, capsys, tmp_path):
     import os
 
@@ -255,3 +292,43 @@ def test_multiple_run_id_flags_rejected(cli_module, monkeypatch, capsys):
         cli_module.main()
     assert exc_info.value.code == 2
     assert "only be specified once" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Static guard: every test in THIS file that reaches cli_module.main()
+# with "evaluate-validation" must either (a) never call main() with a
+# run_id that could resolve (argparse-only tests), or (b) patch
+# run_validation_evaluation (monkeypatch.setattr / functools.partial)
+# within the same test function.
+# ---------------------------------------------------------------------------
+
+
+def test_no_evaluate_validation_cli_test_leaves_the_real_runner_unpatched():
+    import ast
+
+    tree = ast.parse(Path(__file__).read_text())
+    offenders = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name.startswith("test_")):
+            continue
+        func_source = ast.unparse(node)
+        if "evaluate-validation" not in func_source:
+            continue
+        # argparse-only tests (missing/duplicate flags) never reach
+        # main()'s dispatch logic -- SystemExit(2) fires inside
+        # parser.parse_args()/parser.error() before run_validation_evaluation
+        # is ever referenced, so no patch is required for those.
+        if "SystemExit" in func_source and "run_validation_evaluation" not in func_source:
+            continue
+        # Structurally UNRESOLVABLE run_ids (pilot-excluded / not a real
+        # matrix cell) are rejected inside resolve_canonical_training_completion()
+        # before any dangerous access, regardless of run_validation_evaluation()'s
+        # internal ordering -- safe to exercise with the real function.
+        if "s314159" in func_source or "not-a-real-run-id" in func_source:
+            continue
+        patches_runner = "run_validation_evaluation" in func_source and (
+            "monkeypatch.setattr" in func_source or "functools.partial" in func_source
+        )
+        if not patches_runner:
+            offenders.append(node.name)
+    assert offenders == [], f"unpatched real-runner risk in: {offenders}"

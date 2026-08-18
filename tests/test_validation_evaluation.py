@@ -46,6 +46,7 @@ from when_tta_hurts.validation_evaluation import (
     load_frozen_tta_seed_config,
     plan_validation_evaluation,
     resolve_canonical_training_completion,
+    run_validation_evaluation,
     start_evaluation_attempt,
 )
 
@@ -544,7 +545,7 @@ def test_idempotent_skip_before_any_factory(tmp_path, monkeypatch):
 
     run_id = "fake-run"
     cfg_hash = "hash123"
-    attempt_dir, status = start_evaluation_attempt(run_id, cfg_hash, root=tmp_path)
+    attempt_dir, status = start_evaluation_attempt(run_id, cfg_hash, root=tmp_path, ledger_path=ledger_path)
     finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
     (attempt_dir / "predictions.npz").write_bytes(b"x")
     (attempt_dir / "metrics.json").write_text("{}")
@@ -552,20 +553,52 @@ def test_idempotent_skip_before_any_factory(tmp_path, monkeypatch):
     (attempt_dir / "view_manifest.json").write_text("{}")
     from when_tta_hurts.artifacts import atomic_write_json
     from when_tta_hurts.evaluation_result_artifacts import build_evaluation_artifact_manifest
+    from when_tta_hurts.ledger import append_evaluation_entry
 
     manifest = build_evaluation_artifact_manifest(attempt_dir)
     atomic_write_json(manifest, attempt_dir / "artifact_manifest.json")
+    append_evaluation_entry(
+        evaluation_id=cfg_hash,
+        training_run_id=run_id,
+        training_attempt=1,
+        checkpoint_hash="ckpt",
+        evaluation_config_hash=cfg_hash,
+        evaluation_attempt=status.attempt_number,
+        status="completed",
+        primary_artifact_hash="art",
+        started_at=status.started_at,
+        ended_at=status.ended_at,
+        runtime_seconds=1.0,
+        ledger_path=ledger_path,
+    )
 
-    skip = check_evaluation_skip(run_id, cfg_hash, root=tmp_path)
+    skip = check_evaluation_skip(run_id, cfg_hash, root=tmp_path, ledger_path=ledger_path)
     assert skip is not None
     assert skip["attempt_number"] == 1
 
 
 def test_skip_returns_none_for_different_config_hash(tmp_path):
+    from when_tta_hurts.ledger import append_evaluation_entry
+
     run_id = "fake-run-2"
-    attempt_dir, status = start_evaluation_attempt(run_id, "hashA", root=tmp_path)
+    ledger_path = tmp_path / "ledger.csv"
+    attempt_dir, status = start_evaluation_attempt(run_id, "hashA", root=tmp_path, ledger_path=ledger_path)
     finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
-    skip = check_evaluation_skip(run_id, "hashB", root=tmp_path)
+    append_evaluation_entry(
+        evaluation_id="hashA",
+        training_run_id=run_id,
+        training_attempt=1,
+        checkpoint_hash="ckpt",
+        evaluation_config_hash="hashA",
+        evaluation_attempt=status.attempt_number,
+        status="completed",
+        primary_artifact_hash="art",
+        started_at=status.started_at,
+        ended_at=status.ended_at,
+        runtime_seconds=1.0,
+        ledger_path=ledger_path,
+    )
+    skip = check_evaluation_skip(run_id, "hashB", root=tmp_path, ledger_path=ledger_path)
     assert skip is None
 
 
@@ -1094,3 +1127,278 @@ def test_final_test_remains_locked():
 
     with pytest.raises(AuthorizationError):
         run_final_test()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4C: hardened attempt numbering / ledger-directory consistency
+# ---------------------------------------------------------------------------
+
+
+def _append_row(ledger_path, evaluation_id, training_run_id, attempt, status, **overrides):
+    from when_tta_hurts.ledger import append_evaluation_entry
+
+    kwargs = dict(
+        evaluation_id=evaluation_id,
+        training_run_id=training_run_id,
+        training_attempt=1,
+        checkpoint_hash="ckpt",
+        evaluation_config_hash=evaluation_id,
+        evaluation_attempt=attempt,
+        status=status,
+        primary_artifact_hash="",
+        started_at=1.0,
+        ended_at="",
+        runtime_seconds="",
+        ledger_path=ledger_path,
+    )
+    kwargs.update(overrides)
+    return append_evaluation_entry(**kwargs)
+
+
+def test_ledger_only_aborted_attempt_reserves_attempt_number(tmp_path):
+    from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
+
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "ledger-only-run"
+    _append_row(ledger_path, "eid1", run_id, 1, "aborted")
+    # no directory exists for attempt_001 at all
+    assert next_evaluation_attempt_number(run_id, root=tmp_path, ledger_path=ledger_path) == 2
+
+
+def test_next_execution_resolves_to_attempt_002_for_incident_evaluation_id(tmp_path):
+    """Mirrors the real incident: a ledger-only aborted attempt_001 for a
+    given evaluation_id means the next real execution for that SAME
+    training_run_id resolves to attempt_002."""
+    from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
+
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "A-pathmnist-28px-batchnorm-policy-none-s0"
+    _append_row(
+        ledger_path,
+        "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5",
+        run_id,
+        1,
+        "aborted",
+    )
+    assert next_evaluation_attempt_number(run_id, root=tmp_path, ledger_path=ledger_path) == 2
+
+
+def test_deleted_aborted_attempt_directory_is_not_recreated_by_skip_check(tmp_path):
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "deleted-aborted-run"
+    _append_row(ledger_path, "eid2", run_id, 1, "aborted")
+    # check_evaluation_skip must not raise and must not create anything
+    before = set(tmp_path.rglob("*"))
+    skip = check_evaluation_skip(run_id, "eid2", root=tmp_path, ledger_path=ledger_path)
+    after = set(tmp_path.rglob("*"))
+    assert skip is None  # aborted is never a skip target
+    assert before == after
+
+
+def test_aborted_attempt_never_causes_completed_skip(tmp_path):
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "aborted-not-skip-run"
+    attempt_dir, status = start_evaluation_attempt(run_id, "eid3", root=tmp_path, ledger_path=ledger_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.ABORTED, failure_reason="killed")
+    _append_row(ledger_path, "eid3", run_id, status.attempt_number, "aborted")
+    skip = check_evaluation_skip(run_id, "eid3", root=tmp_path, ledger_path=ledger_path)
+    assert skip is None
+
+
+def test_ledger_directory_hash_conflict_hard_fails(tmp_path):
+    from when_tta_hurts.validation_evaluation import EvaluationLedgerConflictError
+
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "conflict-run"
+    attempt_dir, status = start_evaluation_attempt(run_id, "eidA", root=tmp_path, ledger_path=ledger_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    _append_row(ledger_path, "eidB", run_id, status.attempt_number, "completed")  # different evaluation_id!
+    with pytest.raises(EvaluationLedgerConflictError):
+        check_evaluation_skip(run_id, "eidA", root=tmp_path, ledger_path=ledger_path)
+
+
+def test_completed_ledger_row_without_directory_hard_fails(tmp_path):
+    """Unlike aborted/failed, a 'completed' ledger row with no backing
+    directory is NOT the sanctioned case -- completed artifacts must
+    never simply vanish."""
+    from when_tta_hurts.validation_evaluation import EvaluationLedgerConflictError
+
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "vanished-completed-run"
+    _append_row(ledger_path, "eidC", run_id, 1, "completed")
+    with pytest.raises(EvaluationLedgerConflictError):
+        check_evaluation_skip(run_id, "eidC", root=tmp_path, ledger_path=ledger_path)
+
+
+def test_terminal_directory_without_ledger_row_hard_fails(tmp_path):
+    """A completed/failed/aborted attempt DIRECTORY with no ledger row at
+    all indicates a crash between finish_evaluation_attempt() and
+    append_evaluation_entry() -- must hard-fail, not silently retry."""
+    from when_tta_hurts.validation_evaluation import EvaluationLedgerConflictError
+
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "crash-gap-run"
+    attempt_dir, status = start_evaluation_attempt(run_id, "eidD", root=tmp_path, ledger_path=ledger_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    # no ledger row appended -- simulates a crash right after finish_evaluation_attempt()
+    with pytest.raises(EvaluationLedgerConflictError):
+        check_evaluation_skip(run_id, "eidD", root=tmp_path, ledger_path=ledger_path)
+
+
+# ---------------------------------------------------------------------------
+# Clean-tree ordering
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(tmp_path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    (tmp_path / "src_file.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "src_file.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+
+
+def test_dirty_source_tree_fails_before_attempt_allocation(tmp_path, monkeypatch):
+    from when_tta_hurts.orchestrator import DirtyWorkingTreeError
+
+    _init_git_repo(tmp_path)
+    (tmp_path / "src_file.py").write_text("x = 2\n")  # dirty, unapproved path
+    monkeypatch.chdir(tmp_path)
+
+    root = tmp_path / "eval_root"
+    ledger_path = tmp_path / "ledger.csv"
+
+    def fake_resolve(run_id, matrix_path):
+        cell = type(
+            "FakeCell",
+            (),
+            {
+                "run_id": lambda self: run_id,
+                "dataset": "pathmnist",
+                "resolution": 28,
+                "block": "A_core_normalization_resolution",
+            },
+        )()
+        result = type("R", (), {"attempt_number": 1, "checkpoint_hash": "c", "status": "completed"})()
+        return cell, result
+
+    # We only need to reach the clean-tree check; use a temp, isolated
+    # seed config so load_frozen_tta_seed_config() doesn't touch the real
+    # repo's committed config from within this synthetic git repo.
+    import when_tta_hurts.validation_evaluation as ve
+
+    monkeypatch.setattr(ve, "resolve_canonical_training_completion", fake_resolve)
+    monkeypatch.setattr(
+        ve, "parse_and_validate_matrix", lambda *a, **k: type("E", (), {"source_config_hash": "m"})()
+    )
+
+    seed_cfg_path = tmp_path / "validation_evaluation.yaml"
+    seed_cfg_path.write_text(_VALID_YAML_TEXT)
+
+    before = set(tmp_path.rglob("*"))
+
+    with pytest.raises(DirtyWorkingTreeError):
+        ve.run_validation_evaluation(
+            "fake-run",
+            device_resolver=lambda: (_ for _ in ()).throw(AssertionError("MPS must not be reached")),
+            root=root,
+            evaluation_ledger_path=ledger_path,
+            tta_seed_config_path=seed_cfg_path,
+            tta_seed_git_tracked_and_clean=_always_tracked_clean,
+            tta_seed_last_commit_for_path=_commit_for("c" * 40),
+            tta_seed_commit_is_ancestor=_all_ancestors,
+        )
+    after = set(tmp_path.rglob("*"))
+    assert not root.exists()
+    assert not ledger_path.exists()
+    # only the pre-existing dirty file changed -- no new attempt files
+    assert after == before
+
+
+def test_allowed_ledger_prefix_append_does_not_trip_clean_tree(tmp_path, monkeypatch):
+    from when_tta_hurts.orchestrator import require_clean_working_tree
+
+    _init_git_repo(tmp_path)
+    ledger_rel = "artifacts/ledger_validation_evaluation.csv"
+    ledger_path = tmp_path / ledger_rel
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text("a,b\n1,2\n")
+    import subprocess
+
+    subprocess.run(["git", "add", ledger_rel], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add ledger"], cwd=tmp_path, check=True)
+    # strict append only
+    with ledger_path.open("a") as f:
+        f.write("3,4\n")
+    monkeypatch.chdir(tmp_path)
+    require_clean_working_tree()  # must not raise
+
+
+def test_edited_ledger_row_rejected_by_clean_tree(tmp_path, monkeypatch):
+    from when_tta_hurts.orchestrator import DirtyWorkingTreeError, require_clean_working_tree
+
+    _init_git_repo(tmp_path)
+    ledger_rel = "artifacts/ledger_validation_evaluation.csv"
+    ledger_path = tmp_path / ledger_rel
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text("a,b\n1,2\n")
+    import subprocess
+
+    subprocess.run(["git", "add", ledger_rel], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add ledger"], cwd=tmp_path, check=True)
+    ledger_path.write_text("a,b\n1,9\n")  # edited, not appended
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(DirtyWorkingTreeError):
+        require_clean_working_tree()
+
+
+def test_evaluation_ledger_path_is_in_approved_append_only_set():
+    from when_tta_hurts.orchestrator import APPROVED_APPEND_ONLY_LEDGER_PATHS
+
+    assert "artifacts/ledger_validation_evaluation.csv" in APPROVED_APPEND_ONLY_LEDGER_PATHS
+
+
+@pytest.mark.parametrize(
+    "dirty_rel_path",
+    [
+        "configs/validation_evaluation.yaml",
+        "docs/phase2b_validation_evaluation_incident.md",
+        "tests/test_validation_evaluation.py",
+        "scripts/run_validation_evaluation.py",
+    ],
+)
+def test_dirty_non_source_file_kinds_rejected_by_clean_tree(tmp_path, monkeypatch, dirty_rel_path):
+    """config/docs/tests/scripts edits are not exempt -- only the approved
+    append-only ledger paths get any special treatment, and even those only
+    tolerate strict byte-prefix appends (see test_allowed_ledger_prefix_append_
+    does_not_trip_clean_tree / test_edited_ledger_row_rejected_by_clean_tree)."""
+    from when_tta_hurts.orchestrator import DirtyWorkingTreeError, require_clean_working_tree
+
+    _init_git_repo(tmp_path)
+    dirty_path = tmp_path / dirty_rel_path
+    dirty_path.parent.mkdir(parents=True, exist_ok=True)
+    dirty_path.write_text("dirty\n")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(DirtyWorkingTreeError):
+        require_clean_working_tree()
+
+
+def test_production_run_validation_evaluation_calls_clean_tree_check():
+    import inspect
+
+    source = inspect.getsource(run_validation_evaluation)
+    assert "require_clean_working_tree" in source
+
+
+def test_production_order_attempt_allocation_before_mps():
+    """Static check: start_evaluation_attempt() must appear before
+    device_resolver() is called, within run_validation_evaluation()'s
+    source -- MPS failures must never leave a dangling unledgered
+    attempt."""
+    import inspect
+
+    source = inspect.getsource(run_validation_evaluation)
+    assert source.index("start_evaluation_attempt(") < source.index("device_resolver()")

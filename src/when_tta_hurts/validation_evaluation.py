@@ -288,6 +288,19 @@ class EvaluationStaleAttemptError(RuntimeError):
     orchestrator.StaleAttemptError for training attempts."""
 
 
+class EvaluationLedgerConflictError(RuntimeError):
+    """Raised when an evaluation attempt directory and the evaluation
+    ledger disagree about the same (training_run_id, attempt_number) in
+    a way that is NOT the explicit, sanctioned "ledger-recorded
+    aborted/failed attempt whose directory was deleted" case (see
+    docs/phase2b_validation_evaluation_incident.md) -- e.g. a directory
+    and ledger row for the same attempt number with different
+    evaluation_config_hash values, a terminal-status directory with no
+    corresponding ledger row at all, or a ledger row claiming
+    status="completed" with no directory to back it. Always a hard
+    failure requiring explicit investigation, never silently resolved."""
+
+
 _TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "aborted"})
 
 
@@ -342,21 +355,47 @@ def list_evaluation_attempts(
     return statuses
 
 
-def next_evaluation_attempt_number(training_run_id: str, root: str | Path = DEFAULT_EVALUATION_ROOT) -> int:
+def _evaluation_ledger_rows_for_run(training_run_id: str, ledger_path=None) -> list[dict[str, Any]]:
+    from when_tta_hurts import ledger as ledger_module
+
+    if ledger_path is None:
+        ledger_path = ledger_module.VALIDATION_EVALUATION_LEDGER_PATH
+    return [
+        row
+        for row in ledger_module._read_existing_rows(ledger_path)
+        if row.get("training_run_id") == training_run_id
+    ]
+
+
+def next_evaluation_attempt_number(
+    training_run_id: str,
+    root: str | Path = DEFAULT_EVALUATION_ROOT,
+    ledger_path=None,
+) -> int:
+    """Considers BOTH attempt directories on disk AND evaluation-ledger
+    rows for `training_run_id` -- a ledger-recorded attempt number stays
+    permanently reserved even if its directory was deleted (see
+    docs/phase2b_validation_evaluation_incident.md). Returns
+    max(all known attempt numbers) + 1, or 1 if none exist."""
     run_dir = evaluation_run_directory(training_run_id, root)
-    existing = _list_attempt_dirs(run_dir)
-    if not existing:
+    dir_numbers = [int(p.name.split("_")[1]) for p in _list_attempt_dirs(run_dir)]
+    ledger_numbers = [
+        int(row["evaluation_attempt"])
+        for row in _evaluation_ledger_rows_for_run(training_run_id, ledger_path)
+    ]
+    all_numbers = dir_numbers + ledger_numbers
+    if not all_numbers:
         return 1
-    numbers = [int(p.name.split("_")[1]) for p in existing]
-    return max(numbers) + 1
+    return max(all_numbers) + 1
 
 
 def start_evaluation_attempt(
     training_run_id: str,
     evaluation_config_hash: str,
     root: str | Path = DEFAULT_EVALUATION_ROOT,
+    ledger_path=None,
 ) -> tuple[Path, EvaluationAttemptStatus]:
-    attempt_number = next_evaluation_attempt_number(training_run_id, root)
+    attempt_number = next_evaluation_attempt_number(training_run_id, root, ledger_path)
     run_dir = evaluation_run_directory(training_run_id, root)
     attempt_dir = run_dir / f"attempt_{attempt_number:03d}"
     attempt_dir.mkdir(parents=True, exist_ok=False)
@@ -509,25 +548,45 @@ def check_evaluation_skip(
     training_run_id: str,
     evaluation_config_hash: str,
     root: str | Path = DEFAULT_EVALUATION_ROOT,
+    ledger_path=None,
 ) -> dict[str, Any] | None:
     """Metadata-only: does NOT touch MPS, the checkpoint, the dataset, view
     generation, or metric calculation -- only reads status.json/
-    artifact_manifest.json files, mirroring
+    artifact_manifest.json/ledger-row metadata, mirroring
     orchestrator.check_confirmatory_skip()'s discipline exactly (never
     uses a metric value in this decision).
 
-    First, for every attempt (any status): if nonterminal AND unledgered,
-    raise EvaluationStaleAttemptError (mirrors StaleAttemptError). Then:
-    among completed attempts, the FIRST with a matching
-    evaluation_config_hash and a verified artifact_manifest.json is
-    returned as the skip target; a completed attempt with a DIFFERENT
-    hash is a hard failure (the evaluation config changed underneath an
-    existing result)."""
+    In order:
+    1. For every attempt DIRECTORY (any status): if nonterminal AND
+       unledgered, raise EvaluationStaleAttemptError.
+    2. Ledger/directory consistency, per (training_run_id, attempt_number):
+       - directory + ledger row both exist for the same attempt number
+         but with DIFFERENT evaluation_config_hash -> EvaluationLedgerConflictError.
+       - a ledger row exists with NO directory: sanctioned ONLY if the
+         ledger row's status is "aborted" or "failed" (the explicit
+         deleted-terminal-attempt case -- see
+         docs/phase2b_validation_evaluation_incident.md); a "completed"
+         ledger row with no directory is NOT sanctioned and hard-fails,
+         since a completed evaluation's artifacts must never simply
+         vanish.
+       - a directory exists with terminal status but NO ledger row ->
+         EvaluationLedgerConflictError (a completed/failed/aborted
+         attempt must always have been ledger-recorded by the production
+         path; its absence indicates a crash between finish and append
+         that needs explicit reconciliation, not a silent retry).
+    3. Among completed attempts (directory-backed only, by construction
+       of check 2 above), the FIRST with a matching evaluation_config_hash
+       and a verified artifact_manifest.json is returned as the skip
+       target; a completed attempt with a DIFFERENT hash is a hard
+       failure (the evaluation config changed underneath an existing
+       result).
+    """
     from when_tta_hurts import ledger as ledger_module
     from when_tta_hurts.evaluation_result_artifacts import verify_evaluation_artifact_manifest
 
     run_dir = evaluation_run_directory(training_run_id, root)
     all_attempts = list_evaluation_attempts(training_run_id, root)
+    dir_by_number = {s["attempt_number"]: s for s in all_attempts}
 
     for status in all_attempts:
         if status.get("status") not in _TERMINAL_EVAL_STATUSES:
@@ -536,6 +595,34 @@ def check_evaluation_skip(
                     f"Evaluation of {training_run_id} attempt_{status['attempt_number']:03d} is "
                     f"nonterminal (status='{status.get('status')}') and has no ledger row -- "
                     f"refusing to start a new attempt without explicit reconciliation."
+                )
+
+    ledger_rows = _evaluation_ledger_rows_for_run(training_run_id, ledger_path)
+    ledger_by_number = {int(row["evaluation_attempt"]): row for row in ledger_rows}
+
+    for number in sorted(set(dir_by_number) | set(ledger_by_number)):
+        dir_status = dir_by_number.get(number)
+        ledger_row = ledger_by_number.get(number)
+        if dir_status is not None and ledger_row is not None:
+            if dir_status["evaluation_config_hash"] != ledger_row["evaluation_config_hash"]:
+                raise EvaluationLedgerConflictError(
+                    f"{training_run_id} attempt_{number:03d}: directory evaluation_config_hash "
+                    f"{dir_status['evaluation_config_hash']} does not match ledger row's "
+                    f"{ledger_row['evaluation_config_hash']}."
+                )
+        elif dir_status is None and ledger_row is not None:
+            if ledger_row["status"] not in ("aborted", "failed"):
+                raise EvaluationLedgerConflictError(
+                    f"{training_run_id} attempt_{number:03d}: ledger records status="
+                    f"{ledger_row['status']!r} but no attempt directory exists -- only aborted/"
+                    f"failed attempts may have a deleted directory."
+                )
+        elif dir_status is not None and ledger_row is None:
+            if dir_status.get("status") in _TERMINAL_EVAL_STATUSES:
+                raise EvaluationLedgerConflictError(
+                    f"{training_run_id} attempt_{number:03d}: directory has terminal status "
+                    f"{dir_status.get('status')!r} but no ledger row exists -- requires explicit "
+                    f"reconciliation, not a silent retry."
                 )
 
     for status in all_attempts:
@@ -812,6 +899,7 @@ def run_validation_evaluation(
     tta_seed_git_tracked_and_clean=_default_git_tracked_and_clean,
     tta_seed_last_commit_for_path=_default_last_commit_for_path,
     tta_seed_commit_is_ancestor=_default_commit_is_ancestor,
+    require_clean_tree: bool = True,
 ) -> dict[str, Any]:
     """Single entry point for validation-only TTA evaluation. Enforces, IN
     ORDER: (1) load and exhaustively verify the frozen confirmatory TTA-
@@ -821,23 +909,35 @@ def run_validation_evaluation(
     resolve_canonical_training_completion()); (3) derive the deterministic
     evaluation config/ID (now including the seed config's SHA-256/freeze
     commit/derivation digest); (4) idempotent skip check (metadata-only,
-    before MPS/dataset/checkpoint/view-generation/metric-calculation);
-    (5) MPS device resolution (no CPU fallback -- device_resolver defaults
-    to select_device('mps')); (6) load + verify the canonical checkpoint
-    read-only; (7) load the validation split ONLY; (8) compute clean +
-    per-view probabilities and every frozen condition/aggregator/prefix
-    metric; (9) persist + independently verify artifacts; (10) append the
-    terminal evaluation-ledger row.
+    ledger/directory-consistency-checked -- before MPS/dataset/checkpoint/
+    view-generation/metric-calculation); (5) verify permitted working-tree
+    state (require_clean_working_tree() -- dirty source/scripts/tests/
+    configs/docs/dependency files fail HERE, before any attempt is
+    allocated; only strict byte-prefix appends to the approved ledgers,
+    including this evaluation ledger, are permitted); (6) allocate the
+    attempt number and create the attempt directory/status.json; (7) MPS
+    device resolution (no CPU fallback -- device_resolver defaults to
+    select_device('mps') -- now INSIDE the try block, so a device failure
+    is recorded as a terminal "failed" attempt with a ledger row, never
+    left as a dangling unledgered "running" status); (8) load + verify the
+    canonical checkpoint read-only; (9) load the validation split ONLY;
+    (10) compute clean + per-view probabilities and every frozen
+    condition/aggregator/prefix metric; (11) persist + independently
+    verify artifacts; (12) append the terminal evaluation-ledger row.
 
     The `tta_seed_config_*` injectable parameters exist ONLY for synthetic
     tests, mirroring authorize_block_d_cell()'s identical pattern -- there
     is no CLI flag or environment variable that overrides them.
+    `require_clean_tree=False` exists only for injected tests that don't
+    care about repo state (mirrors run_canary_cell()'s identical
+    parameter); the production CLI never passes it.
 
-    A failed seed-config/resolution/skip step (1)-(4) creates ZERO files
-    and ZERO ledger rows.
+    A failed seed-config/resolution/skip/clean-tree step (1)-(5) creates
+    ZERO files and ZERO ledger rows.
     """
     from when_tta_hurts import ledger as ledger_module
     from when_tta_hurts.devices import select_device
+    from when_tta_hurts.orchestrator import require_clean_working_tree
 
     if device_resolver is None:
         device_resolver = lambda: select_device("mps")  # noqa: E731
@@ -860,7 +960,7 @@ def run_validation_evaluation(
     )
     evaluation_id = compute_evaluation_id(cfg)
 
-    skip = check_evaluation_skip(run_id, evaluation_id, root)
+    skip = check_evaluation_skip(run_id, evaluation_id, root, evaluation_ledger_path)
     if skip is not None:
         return {
             "status": "skipped_completed",
@@ -869,9 +969,12 @@ def run_validation_evaluation(
             **skip,
         }
 
-    device = device_resolver()
-    attempt_dir, status = start_evaluation_attempt(run_id, evaluation_id, root)
+    if require_clean_tree:
+        require_clean_working_tree()
+
+    attempt_dir, status = start_evaluation_attempt(run_id, evaluation_id, root, evaluation_ledger_path)
     try:
+        device = device_resolver()
         model = load_and_verify_canonical_checkpoint(cell, training_result, training_root)
         split = load_validation_evaluation_split(cell.dataset, cell.resolution, data_root)
         outcome = compute_validation_evaluation(model, split, resolved_tta_seed, device)
