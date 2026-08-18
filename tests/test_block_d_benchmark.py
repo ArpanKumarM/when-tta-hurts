@@ -498,15 +498,17 @@ def test_one_dataset_failing_checksum_omits_entire_block(monkeypatch, tmp_path):
 
 
 def test_result_schema_contains_no_scientific_metric_fields(monkeypatch, tmp_path):
+    """Word-boundary check, matching production's _find_forbidden_scientific_term
+    -- a raw substring check is flaky here because real SHA-256/git-commit hex
+    hashes (source_commit, raw_output_sha256) can coincidentally contain
+    substrings like 'f1' or 'ece' without meaning anything scientific."""
     _stub_full_pipeline(monkeypatch, tmp_path)
     result = bdb.run_block_d_benchmark(
         device_resolver=lambda: torch.device("cpu"),
         output_path=tmp_path / "raw.json",
         decision_path=tmp_path / "gate_decision.json",
     )
-    serialized = json.dumps(result).lower()
-    for term in ("accuracy", "f1", "nll", "ece", "brier", "tta_delta", "test_metric"):
-        assert term not in serialized
+    assert bdb._find_forbidden_scientific_term(result) is None
 
 
 def test_validate_output_schema_rejects_forbidden_term():
