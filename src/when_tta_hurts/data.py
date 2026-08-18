@@ -21,6 +21,16 @@ DERMAMNIST_LICENSE_NOTICE = (
 
 SUPPORTED_DATASETS = ("pathmnist", "bloodmnist", "dermamnist")
 
+
+class TestSplitAccessError(PermissionError):
+    """Raised when code tries to load the official test split without
+    explicit, narrow authorization. See docs/experimental_protocol.md's
+    test firewall and the Phase 2A pilot protocol -- the pilot must never
+    be able to reach the test split, accidentally or otherwise."""
+
+    __test__ = False  # not a pytest test class; name starts with "Test" incidentally
+
+
 # Expected official split counts, verified against the source paper and
 # cross-checked programmatically against medmnist.INFO in
 # verify_split_counts() below -- see docs/data_and_licensing.md.
@@ -145,6 +155,7 @@ def load_dataset(
     root: str | Path = "data/raw",
     download: bool = True,
     transform=None,
+    allow_test: bool = False,
 ):
     """Load a MedMNIST split via the official package.
 
@@ -153,12 +164,27 @@ def load_dataset(
     anywhere else. Returns torch.Tensor images (not PIL) by default via
     torchvision.transforms.ToTensor(), unless a different `transform` is
     supplied.
+
+    TEST-SET FIREWALL: split='test' is rejected with TestSplitAccessError
+    unless allow_test=True is passed explicitly. allow_test defaults to
+    False everywhere in this project's training/pilot code paths, per
+    docs/experimental_protocol.md's test firewall. This is a generic
+    loader used by scripts that ARE allowed test access (e.g. an eventual
+    exact-baseline-reproduction script); the Phase 2A pilot does NOT use
+    this parameter -- see load_pilot_split() below, which has no override
+    at all.
     """
     name = name.lower()
     if name not in SUPPORTED_DATASETS:
         raise ValueError(f"Unsupported dataset '{name}'; expected one of {SUPPORTED_DATASETS}")
     if split not in ("train", "val", "test"):
         raise ValueError(f"Unsupported split '{split}'; expected train/val/test")
+    if split == "test" and not allow_test:
+        raise TestSplitAccessError(
+            "Attempted to load the official test split without allow_test=True. "
+            "Per docs/experimental_protocol.md's test firewall, test-split access "
+            "must be explicit and narrow, not a default or an incidental side effect."
+        )
 
     import medmnist
     from torchvision import transforms as T
@@ -179,3 +205,22 @@ def load_dataset(
         root=str(root),
         transform=transform,
     )
+
+
+def load_pilot_split(name: str, split: str, size: int = 28, root: str | Path = "data/raw", transform=None):
+    """Load a split for the Phase 2A pilot -- ONLY 'train' or 'val'.
+
+    This function deliberately has NO allow_test override of any kind: the
+    pilot configuration (configs/pilot_pathmnist_28_bn.yaml) prohibits test
+    access entirely, and per your instruction this must not gain a
+    convenience override. Requesting split='test' (or anything other than
+    'train'/'val') raises TestSplitAccessError / ValueError before any
+    data is touched.
+    """
+    if split not in ("train", "val"):
+        raise TestSplitAccessError(
+            f"load_pilot_split() only accepts split in ('train', 'val'); got '{split}'. "
+            "The Phase 2A pilot has no mechanism to request the test split -- "
+            "see docs/pilot_protocol.md."
+        )
+    return load_dataset(name, split=split, size=size, root=root, download=True, transform=transform)

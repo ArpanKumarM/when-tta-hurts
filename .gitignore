@@ -9,6 +9,14 @@ results/figures/*.png
 results/figures/*.pdf
 !results/README.md
 
+# Pilot/benchmark/experiment artifacts, checkpoints, caches -- large/generated,
+# never committed. The two append-only research-record ledgers are the
+# narrow exception: they're small, human-auditable CSVs that document run
+# history (including aborted runs) and are tracked deliberately.
+artifacts/*
+!artifacts/ledger.csv
+!artifacts/ledger_incidents.csv
+
 # Python
 __pycache__/
 *.py[cod]

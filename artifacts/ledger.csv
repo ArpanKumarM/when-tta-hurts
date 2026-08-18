@@ -1,0 +1,2 @@
+phase,confirmatory,split,run_id,dataset,resolution,model,normalization,seed,tta_seed,config_hash,git_commit,best_epoch,epochs_completed,early_stopped,clean_val_accuracy,status,artifact_dir
+pilot,False,validation,pilot-pathmnist-28-bn-8f4a5024,pathmnist,28,small_cnn,batchnorm,314159,271828,0de51f896df092ebc440e2d2f076ff776fb165efa99e2a07e0a3bafaf53eb5cd,9767c808c4db0527ff8f8e38b60b06f56f615c35,30,30,False,0.9747101159536186,completed,artifacts/pilots/pilot-pathmnist-28-bn-8f4a5024
