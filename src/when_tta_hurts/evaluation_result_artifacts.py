@@ -29,6 +29,7 @@ sample indices, and probability arrays.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,8 @@ _METADATA_REQUIRED_KEYS = {
     "protocol_commit",
     "matrix_hash",
     "source_commit",
+    "evaluator_fingerprint",
+    "evaluator_fingerprint_manifest",
     "evaluation_config_hash",
     "split",
     "n_validation_samples",
@@ -92,6 +95,7 @@ _METRICS_REQUIRED_KEYS = {
     "evaluation_config_hash",
     "clean",
     "conditions",
+    "latency",
 }
 
 
@@ -148,6 +152,86 @@ def _validate_probability_array(name: str, probs: np.ndarray, n_expected: int, n
             f"{name}: rows do not sum to 1 within tolerance (max deviation "
             f"{np.abs(row_sums - 1.0).max():.6f}) -- not normalized probabilities."
         )
+
+
+def _validate_latency_schema(
+    latency: dict[str, Any], expected_prefix_sequence: tuple[int, ...], expected_n_samples: int
+) -> None:
+    """Verify a persisted latency report (metrics.json's "latency" section,
+    see evaluation/latency.py::LatencyReport / validation_evaluation.py::
+    compute_evaluation_latency_report()). Raises EvaluationPersistenceError
+    on ANY violation -- a malformed/incomplete/non-finite latency report
+    must never be marked completed, per
+    docs/phase2b_validation_evaluation_engineering_freeze.md sec.1.7."""
+    required_top = {"clean_latency_seconds", "n_samples", "by_n"}
+    missing = required_top - set(latency.keys())
+    if missing:
+        raise EvaluationPersistenceError(f"latency report missing required key(s): {sorted(missing)}")
+
+    clean_latency = latency["clean_latency_seconds"]
+    if not isinstance(clean_latency, int | float) or not math.isfinite(clean_latency):
+        raise EvaluationPersistenceError(f"latency.clean_latency_seconds is not finite: {clean_latency!r}")
+    if clean_latency < 0:
+        raise EvaluationPersistenceError(f"latency.clean_latency_seconds is negative: {clean_latency}")
+
+    if latency["n_samples"] != expected_n_samples:
+        raise EvaluationPersistenceError(
+            f"latency.n_samples={latency['n_samples']} does not match the persisted prediction "
+            f"sample count {expected_n_samples}."
+        )
+
+    by_n = latency["by_n"]
+    expected_keys = {str(n) for n in expected_prefix_sequence}
+    actual_keys = set(by_n.keys())
+    if actual_keys != expected_keys:
+        raise EvaluationPersistenceError(
+            f"latency.by_n keys {sorted(actual_keys)} do not exactly match the registered N values "
+            f"{sorted(expected_keys)}."
+        )
+
+    for n in expected_prefix_sequence:
+        entry = by_n[str(n)]
+        required_entry_keys = {"tta_latency_seconds", "per_sample_latency_seconds", "compute_multiplier"}
+        missing_entry = required_entry_keys - set(entry.keys())
+        if missing_entry:
+            raise EvaluationPersistenceError(f"latency.by_n[{n}] missing key(s): {sorted(missing_entry)}")
+
+        tta_seconds = entry["tta_latency_seconds"]
+        per_sample = entry["per_sample_latency_seconds"]
+        multiplier = entry["compute_multiplier"]
+
+        for name, value in (
+            ("tta_latency_seconds", tta_seconds),
+            ("per_sample_latency_seconds", per_sample),
+            ("compute_multiplier", multiplier),
+        ):
+            if not isinstance(value, int | float) or not math.isfinite(value):
+                raise EvaluationPersistenceError(f"latency.by_n[{n}].{name} is not finite: {value!r}")
+        if tta_seconds < 0:
+            raise EvaluationPersistenceError(
+                f"latency.by_n[{n}].tta_latency_seconds is negative: {tta_seconds}"
+            )
+        if per_sample < 0:
+            raise EvaluationPersistenceError(
+                f"latency.by_n[{n}].per_sample_latency_seconds is negative: {per_sample}"
+            )
+
+        expected_per_sample = tta_seconds / expected_n_samples if expected_n_samples > 0 else 0.0
+        if not math.isclose(per_sample, expected_per_sample, rel_tol=1e-9, abs_tol=1e-12):
+            raise EvaluationPersistenceError(
+                f"latency.by_n[{n}].per_sample_latency_seconds={per_sample} does not match "
+                f"tta_latency_seconds/n_samples={expected_per_sample}."
+            )
+
+        expected_multiplier = (tta_seconds / clean_latency) if clean_latency > 0 else float("inf")
+        if not (
+            math.isclose(multiplier, expected_multiplier, rel_tol=1e-9, abs_tol=1e-12)
+            or (multiplier == float("inf") and expected_multiplier == float("inf"))
+        ):
+            raise EvaluationPersistenceError(
+                f"latency.by_n[{n}].compute_multiplier={multiplier} does not match the frozen formula "
+                f"tta_latency_seconds/clean_latency_seconds={expected_multiplier}."
+            )
 
 
 def validate_predictions_arrays(predictions: dict[str, np.ndarray]) -> None:
@@ -215,19 +299,24 @@ def persist_and_verify_evaluation_completion(
     metrics: dict[str, Any],
     metadata: dict[str, Any],
     view_manifest: dict[str, Any],
+    prefix_sequence: tuple[int, ...],
     metric_recomputers: dict[str, tuple[float, Any]] | None = None,
 ) -> dict[str, Any]:
     """Atomically write predictions.npz/metrics.json/metadata.json/
-    view_manifest.json; validate schemas and probability arrays; build +
-    verify artifact_manifest.json; independently recompute every metric
-    listed in `metric_recomputers` (a dict of
-    {name: (stored_value, recompute_callable)}, each `recompute_callable()`
-    called with no arguments and compared against `stored_value`) and
-    confirm agreement within tolerance.
+    view_manifest.json; validate schemas, probability arrays, and the
+    required latency-report section (metrics["latency"], validated against
+    `prefix_sequence` and the persisted prediction sample count -- see
+    _validate_latency_schema()); build + verify artifact_manifest.json;
+    independently recompute every metric listed in `metric_recomputers` (a
+    dict of {name: (stored_value, recompute_callable)}, each
+    `recompute_callable()` called with no arguments and compared against
+    `stored_value`) and confirm agreement within tolerance.
 
     Returns the artifact_manifest dict on success. Raises
     EvaluationPersistenceError (or the EvaluationSchemaValidationError
     subclass) on ANY failure -- callers must treat the attempt as failed.
+    A malformed/incomplete/non-finite latency report is exactly such a
+    failure -- it can never produce status="completed".
     """
     attempt_dir = Path(attempt_dir)
 
@@ -235,6 +324,9 @@ def persist_and_verify_evaluation_completion(
     _validate_metadata_schema(metadata)
     _validate_view_manifest_schema(view_manifest)
     _validate_metrics_schema(metrics)
+    _validate_latency_schema(
+        metrics["latency"], prefix_sequence, int(np.asarray(predictions["labels"]).shape[0])
+    )
 
     if metric_recomputers:
         for name, (stored_value, recompute) in metric_recomputers.items():

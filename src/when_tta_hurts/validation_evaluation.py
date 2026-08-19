@@ -48,6 +48,7 @@ from when_tta_hurts.evaluation.aggregation import (
     original_anchored_mean_probability,
 )
 from when_tta_hurts.evaluation.bn_adaptation import BNAdaptationNotApplicableError, bn_adapt
+from when_tta_hurts.evaluation.latency import LatencyReport, measure_clean_latency, measure_tta_latency
 from when_tta_hurts.evaluation.validation_loader import load_validation_evaluation_split
 from when_tta_hurts.evaluation.views import build_view_seed_manifest, iter_deterministic_views
 from when_tta_hurts.evaluation_result_artifacts import (
@@ -97,6 +98,60 @@ SECONDARY_ANALYSES: tuple[str, ...] = (
 )
 
 DEFAULT_EVALUATION_ROOT = Path("artifacts/validation_evaluation")
+
+# --- Phase 2B.4D-Engineering: evaluator-implementation fingerprint -------
+#
+# See docs/phase2b_validation_evaluation_engineering_freeze.md sec.2.3 for
+# the frozen rationale/category coverage of every entry below. Content
+# fingerprint of these files (never the literal current git HEAD) is what
+# makes evaluation_id stable across ledger/doc-only commits while still
+# failing closed on a real evaluation-relevant code/config change.
+EVALUATOR_FINGERPRINT_MANIFEST: tuple[str, ...] = (
+    "configs/validation_evaluation.yaml",
+    "src/when_tta_hurts/artifacts.py",
+    "src/when_tta_hurts/evaluation/aggregation.py",
+    "src/when_tta_hurts/evaluation/bn_adaptation.py",
+    "src/when_tta_hurts/evaluation/latency.py",
+    "src/when_tta_hurts/evaluation/validation_loader.py",
+    "src/when_tta_hurts/evaluation/views.py",
+    "src/when_tta_hurts/evaluation_result_artifacts.py",
+    "src/when_tta_hurts/metrics.py",
+    "src/when_tta_hurts/models/small_cnn.py",
+    "src/when_tta_hurts/transforms/policies.py",
+    "src/when_tta_hurts/validation_evaluation.py",
+)
+
+
+class EvaluatorFingerprintError(RuntimeError):
+    """Raised when a file listed in EVALUATOR_FINGERPRINT_MANIFEST does
+    not exist on disk at fingerprint-computation time -- never silently
+    fingerprints a partial manifest."""
+
+
+def compute_evaluator_fingerprint(
+    repo_root: str | Path = ".",
+    manifest: tuple[str, ...] = EVALUATOR_FINGERPRINT_MANIFEST,
+) -> tuple[str, dict[str, str]]:
+    """Deterministic content fingerprint of every evaluation-relevant
+    tracked file in `manifest`, computed from the actual working-tree
+    bytes via the existing, unchanged artifacts.py::hash_file(). Returns
+    (fingerprint, {path: sha256}) -- both are persisted (see
+    metadata.json's evaluator_fingerprint/evaluator_fingerprint_manifest
+    fields). This is a STABLE identity input (unlike source_commit, which
+    is provenance-only and not hashed into evaluation_id)."""
+    repo_root = Path(repo_root)
+    file_hashes: dict[str, str] = {}
+    for rel_path in manifest:
+        path = repo_root / rel_path
+        if not path.exists():
+            raise EvaluatorFingerprintError(
+                f"Evaluator-fingerprint manifest file missing: {rel_path}. Refusing to compute a "
+                f"partial fingerprint."
+            )
+        file_hashes[rel_path] = hash_file(path)
+    fingerprint = config_hash({"manifest_version": 1, "files": file_hashes})
+    return fingerprint, file_hashes
+
 
 # --- Phase 2B.4B: frozen confirmatory TTA seed ---------------------------
 #
@@ -301,6 +356,17 @@ class EvaluationLedgerConflictError(RuntimeError):
     failure requiring explicit investigation, never silently resolved."""
 
 
+class AmbiguousEvaluationCompletionError(RuntimeError):
+    """Raised when more than one completed, directory-backed, artifact-
+    verified evaluation attempt for the same training_run_id matches the
+    same evaluation_config_hash -- mirrors
+    orchestrator.AmbiguousCanonicalCompletionError's discipline exactly.
+    There is no evaluation-side amendments-ledger equivalent (no
+    eligibility-filtering step), so this is never silently resolved by
+    earliest/latest recency -- it always requires explicit human
+    reconciliation."""
+
+
 _TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "aborted"})
 
 
@@ -496,20 +562,26 @@ class ValidationEvaluationConfig:
     policy: str
     protocol_commit: str
     matrix_hash: str
-    source_commit: str
+    evaluator_fingerprint: str
     tta_seed_config_sha256: str
     tta_seed_freeze_commit: str
     tta_seed_derivation_sha256: str
 
 
 def compute_evaluation_id(cfg: ValidationEvaluationConfig) -> str:
-    """Deterministic evaluation ID hashing every field listed in
+    """Deterministic, STABLE evaluation ID hashing every field listed in
     ValidationEvaluationConfig -- training run/attempt/checkpoint identity,
     split (always 'validation'), the frozen TTA seed AND its config-file
     SHA-256/freeze commit/derivation digest, prefix sequence, aggregators/
-    secondary-analysis configuration, and protocol/matrix/source
-    provenance. Two evaluation requests differing in ANY of these fields
-    get a different evaluation_id."""
+    secondary-analysis configuration, protocol/matrix provenance, and the
+    evaluator-implementation fingerprint (compute_evaluator_fingerprint()).
+    Deliberately does NOT hash the literal current git HEAD (that is
+    execution provenance -- see source_commit, persisted separately,
+    unhashed, in metadata.json) -- see
+    docs/phase2b_validation_evaluation_engineering_freeze.md sec.2 for the
+    stability rationale. Two evaluation requests differing in ANY hashed
+    field get a different evaluation_id; a ledger/doc-only commit that
+    changes none of them does not."""
     return config_hash(asdict(cfg))
 
 
@@ -518,7 +590,7 @@ def build_validation_evaluation_config(
     training_result: CellTrainResult,
     tta_seed_config: FrozenTTASeedConfig,
     matrix_hash: str,
-    source_commit: str,
+    evaluator_fingerprint: str,
 ) -> ValidationEvaluationConfig:
     return ValidationEvaluationConfig(
         training_run_id=cell.run_id(),
@@ -532,7 +604,7 @@ def build_validation_evaluation_config(
         policy=tta_seed_config.policy_identifier,
         protocol_commit=FROZEN_PROTOCOL_COMMIT,
         matrix_hash=matrix_hash,
-        source_commit=source_commit,
+        evaluator_fingerprint=evaluator_fingerprint,
         tta_seed_config_sha256=tta_seed_config.config_file_sha256,
         tta_seed_freeze_commit=tta_seed_config.freeze_commit,
         tta_seed_derivation_sha256=tta_seed_config.derivation_sha256,
@@ -625,6 +697,7 @@ def check_evaluation_skip(
                     f"reconciliation, not a silent retry."
                 )
 
+    matching_completed = []
     for status in all_attempts:
         if status.get("status") != EvaluationRunStatus.COMPLETED.value:
             continue
@@ -639,7 +712,18 @@ def check_evaluation_skip(
             )
         manifest = json.loads(manifest_path.read_text())
         verify_evaluation_artifact_manifest(attempt_dir, manifest)
-        return status
+        matching_completed.append(status)
+
+    if len(matching_completed) > 1:
+        attempt_numbers = sorted(s["attempt_number"] for s in matching_completed)
+        raise AmbiguousEvaluationCompletionError(
+            f"Multiple completed, artifact-verified evaluation attempts for {training_run_id} match "
+            f"evaluation_config_hash={evaluation_config_hash}: attempts {attempt_numbers}. Refusing "
+            f"to silently choose earliest/latest -- resolve via explicit reconciliation before "
+            f"proceeding."
+        )
+    if matching_completed:
+        return matching_completed[0]
     return None
 
 
@@ -883,6 +967,87 @@ def compute_validation_evaluation(
 
 
 # ---------------------------------------------------------------------------
+# Inference-latency measurement (Phase 2B.4D-Engineering) -- reuses
+# evaluation/latency.py's measure_clean_latency()/measure_tta_latency()
+# UNCHANGED. Does not call evaluation/latency.py::build_latency_report()
+# directly: that convenience wrapper requires every registered N's view
+# list to be materialized simultaneously (~193 view-batches total), which
+# is materially larger than necessary. This function calls the SAME
+# frozen primitives in a loop that generates and discards each N's views
+# immediately after timing, bounding peak memory to the single largest
+# registered N -- see
+# docs/phase2b_validation_evaluation_engineering_freeze.md sec.1.2/1.3.
+# ---------------------------------------------------------------------------
+
+
+def compute_evaluation_latency_report(
+    model: torch.nn.Module,
+    split,
+    tta_seed: int,
+    device: torch.device,
+) -> LatencyReport:
+    """Measure clean + per-registered-N TTA inference latency using the
+    SAME restored checkpoint (`model`), validation population (`split`),
+    device, and registered N values (PREFIX_SEQUENCE) as the scientific
+    evaluation already computed in this attempt. Never accepts labels or
+    any prediction/metric value -- structurally cannot influence or be
+    influenced by scientific results. Never mutates or reads the
+    already-computed scientific probability bank; regenerates its own
+    deterministic view tensors via evaluation/views.py and discards them
+    immediately after timing."""
+    model.eval()
+    x = split.images.to(device)
+    n_samples = x.shape[0]
+    clean_latency = measure_clean_latency(model, x, device)
+
+    policy = build_policy(POLICY_IDENTIFIER, output_size=(split.resolution, split.resolution))
+    sample_indices = split.sample_indices.tolist()
+
+    tta_latency_by_n: dict[int, float] = {}
+    per_sample_by_n: dict[int, float] = {}
+    multiplier_by_n: dict[int, float] = {}
+    for n in PREFIX_SEQUENCE:
+        views = [
+            view_batch.to(device)
+            for _view_index, view_batch in iter_deterministic_views(
+                split.images, policy, tta_seed, split.dataset, split.resolution, sample_indices, n
+            )
+        ]
+        total = measure_tta_latency(model, views, device)
+        del views
+        tta_latency_by_n[n] = total
+        per_sample_by_n[n] = total / n_samples if n_samples > 0 else 0.0
+        multiplier_by_n[n] = (total / clean_latency) if clean_latency > 0 else float("inf")
+
+    return LatencyReport(
+        clean_latency_seconds=clean_latency,
+        tta_latency_seconds_by_n=tta_latency_by_n,
+        per_sample_latency_seconds_by_n=per_sample_by_n,
+        compute_multiplier_by_n=multiplier_by_n,
+        n_samples=n_samples,
+    )
+
+
+def _latency_report_to_dict(report: LatencyReport) -> dict[str, Any]:
+    """JSON-safe serialization of a LatencyReport for metrics["latency"]
+    -- JSON object keys must be strings, so registered N values become
+    string keys under "by_n" (see
+    docs/phase2b_validation_evaluation_engineering_freeze.md sec.1.6)."""
+    return {
+        "clean_latency_seconds": report.clean_latency_seconds,
+        "n_samples": report.n_samples,
+        "by_n": {
+            str(n): {
+                "tta_latency_seconds": report.tta_latency_seconds_by_n[n],
+                "per_sample_latency_seconds": report.per_sample_latency_seconds_by_n[n],
+                "compute_multiplier": report.compute_multiplier_by_n[n],
+            }
+            for n in report.tta_latency_seconds_by_n
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Top-level orchestration
 # ---------------------------------------------------------------------------
 
@@ -900,17 +1065,22 @@ def run_validation_evaluation(
     tta_seed_last_commit_for_path=_default_last_commit_for_path,
     tta_seed_commit_is_ancestor=_default_commit_is_ancestor,
     require_clean_tree: bool = True,
+    evaluator_fingerprint_repo_root: str | Path = ".",
 ) -> dict[str, Any]:
     """Single entry point for validation-only TTA evaluation. Enforces, IN
     ORDER: (1) load and exhaustively verify the frozen confirmatory TTA-
     seed configuration (configs/validation_evaluation.yaml -- see
     load_frozen_tta_seed_config()); (2) resolve the canonical training
     completion (rejects every ineligible attempt type -- see
-    resolve_canonical_training_completion()); (3) derive the deterministic
-    evaluation config/ID (now including the seed config's SHA-256/freeze
-    commit/derivation digest); (4) idempotent skip check (metadata-only,
-    ledger/directory-consistency-checked -- before MPS/dataset/checkpoint/
-    view-generation/metric-calculation); (5) verify permitted working-tree
+    resolve_canonical_training_completion()); (3) compute the evaluator-
+    implementation fingerprint (compute_evaluator_fingerprint() -- content
+    hash of EVALUATOR_FINGERPRINT_MANIFEST, NOT the current git HEAD) and
+    derive the deterministic, STABLE evaluation config/ID from it (now
+    including the seed config's SHA-256/freeze commit/derivation digest --
+    see docs/phase2b_validation_evaluation_engineering_freeze.md sec.2);
+    (4) idempotent skip check (metadata-only, ledger/directory-consistency-
+    checked, ambiguity-checked -- before MPS/dataset/checkpoint/view-
+    generation/metric-calculation); (5) verify permitted working-tree
     state (require_clean_working_tree() -- dirty source/scripts/tests/
     configs/docs/dependency files fail HERE, before any attempt is
     allocated; only strict byte-prefix appends to the approved ledgers,
@@ -922,8 +1092,13 @@ def run_validation_evaluation(
     left as a dangling unledgered "running" status); (8) load + verify the
     canonical checkpoint read-only; (9) load the validation split ONLY;
     (10) compute clean + per-view probabilities and every frozen
-    condition/aggregator/prefix metric; (11) persist + independently
-    verify artifacts; (12) append the terminal evaluation-ledger row.
+    condition/aggregator/prefix metric, THEN measure clean/TTA inference
+    latency (compute_evaluation_latency_report() -- descriptive only,
+    never influences (10)'s already-computed results); (11) persist +
+    independently verify artifacts, including the required latency
+    section (a malformed/incomplete/non-finite latency report fails this
+    step, never producing status="completed"); (12) append the terminal
+    evaluation-ledger row.
 
     The `tta_seed_config_*` injectable parameters exist ONLY for synthetic
     tests, mirroring authorize_block_d_cell()'s identical pattern -- there
@@ -931,6 +1106,12 @@ def run_validation_evaluation(
     `require_clean_tree=False` exists only for injected tests that don't
     care about repo state (mirrors run_canary_cell()'s identical
     parameter); the production CLI never passes it.
+    `evaluator_fingerprint_repo_root` defaults to "." (the real repo root
+    in production) and exists ONLY so synthetic tests can chdir into an
+    isolated temporary git repo (for require_clean_working_tree() testing)
+    while still pointing evaluator-fingerprint file reads at the real,
+    unchanged evaluation source tree -- the production CLI never passes
+    it.
 
     A failed seed-config/resolution/skip/clean-tree step (1)-(5) creates
     ZERO files and ZERO ledger rows.
@@ -955,18 +1136,29 @@ def run_validation_evaluation(
     cell, training_result = resolve_canonical_training_completion(run_id, matrix_path)
 
     expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
+    evaluator_fingerprint, evaluator_fingerprint_manifest = compute_evaluator_fingerprint(
+        repo_root=evaluator_fingerprint_repo_root
+    )
     cfg = build_validation_evaluation_config(
-        cell, training_result, seed_cfg, expanded.source_config_hash, _git_commit_hash()
+        cell, training_result, seed_cfg, expanded.source_config_hash, evaluator_fingerprint
     )
     evaluation_id = compute_evaluation_id(cfg)
+    source_commit = _git_commit_hash()  # execution provenance only -- NOT hashed into evaluation_id
 
     skip = check_evaluation_skip(run_id, evaluation_id, root, evaluation_ledger_path)
     if skip is not None:
+        # NOTE: "status" is placed AFTER the **skip spread so the constant
+        # "skipped_completed" marker always wins -- `skip` is the underlying
+        # attempt's own status dict (status.json content), whose "status"
+        # key holds "completed", not "skipped_completed". Putting the
+        # literal key first would let dict-literal evaluation order
+        # silently overwrite it with "completed" (audit finding, Phase
+        # 2B.4D-Engineering).
         return {
-            "status": "skipped_completed",
             "training_run_id": run_id,
             "evaluation_id": evaluation_id,
             **skip,
+            "status": "skipped_completed",
         }
 
     if require_clean_tree:
@@ -978,6 +1170,7 @@ def run_validation_evaluation(
         model = load_and_verify_canonical_checkpoint(cell, training_result, training_root)
         split = load_validation_evaluation_split(cell.dataset, cell.resolution, data_root)
         outcome = compute_validation_evaluation(model, split, resolved_tta_seed, device)
+        latency_report = compute_evaluation_latency_report(model, split, resolved_tta_seed, device)
 
         seed_manifest = build_view_seed_manifest(
             resolved_tta_seed, cell.dataset, cell.resolution, split.sample_indices.tolist(), MAX_VIEWS
@@ -1004,7 +1197,9 @@ def run_validation_evaluation(
             "secondary_analyses": list(SECONDARY_ANALYSES),
             "protocol_commit": cfg.protocol_commit,
             "matrix_hash": cfg.matrix_hash,
-            "source_commit": cfg.source_commit,
+            "source_commit": source_commit,
+            "evaluator_fingerprint": evaluator_fingerprint,
+            "evaluator_fingerprint_manifest": evaluator_fingerprint_manifest,
             "evaluation_config_hash": evaluation_id,
             "split": "validation",
             "n_validation_samples": len(split.sample_indices),
@@ -1023,7 +1218,12 @@ def run_validation_evaluation(
             "sample_indices": split.sample_indices.tolist(),
             "seed_manifest_sha256": seed_manifest_hash,
         }
-        metrics = {"training_run_id": run_id, "evaluation_config_hash": evaluation_id, **outcome["metrics"]}
+        metrics = {
+            "training_run_id": run_id,
+            "evaluation_config_hash": evaluation_id,
+            **outcome["metrics"],
+            "latency": _latency_report_to_dict(latency_report),
+        }
 
         def _recompute_n50_mean_probability_accuracy() -> float:
             n50_probs = recompute_mean_probability_prefix(outcome["predictions"]["view_probs"], PRIMARY_N)
@@ -1047,6 +1247,7 @@ def run_validation_evaluation(
             metrics=metrics,
             metadata=metadata,
             view_manifest=view_manifest,
+            prefix_sequence=PREFIX_SEQUENCE,
             metric_recomputers=metric_recomputers,
         )
 

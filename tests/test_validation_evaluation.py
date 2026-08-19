@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import torch
 
+from when_tta_hurts.evaluation.latency import build_latency_report
 from when_tta_hurts.evaluation.validation_loader import ValidationEvaluationSplit
 from when_tta_hurts.evaluation.views import (
     build_view_seed_manifest,
@@ -34,12 +35,17 @@ from when_tta_hurts.evaluation_result_artifacts import (
 from when_tta_hurts.models.small_cnn import build_small_cnn
 from when_tta_hurts.orchestrator import PilotOrExcludedSeedRunIdError, UnknownRunIdError
 from when_tta_hurts.transforms.policies import build_policy
-from when_tta_hurts.validation_evaluation import EvaluationRunStatus as _RunStatus
 from when_tta_hurts.validation_evaluation import (
+    EVALUATOR_FINGERPRINT_MANIFEST,
+    AmbiguousEvaluationCompletionError,
+    EvaluatorFingerprintError,
     FrozenTTASeedConfigError,
     ValidationEvaluationConfig,
+    build_validation_evaluation_config,
     check_evaluation_skip,
     compute_evaluation_id,
+    compute_evaluation_latency_report,
+    compute_evaluator_fingerprint,
     compute_validation_evaluation,
     finish_evaluation_attempt,
     list_evaluation_attempts,
@@ -49,6 +55,7 @@ from when_tta_hurts.validation_evaluation import (
     run_validation_evaluation,
     start_evaluation_attempt,
 )
+from when_tta_hurts.validation_evaluation import EvaluationRunStatus as _RunStatus
 
 MATRIX_PATH = "configs/experiment_matrix.yaml"
 FROZEN_TTA_SEED = 1306178015
@@ -466,7 +473,7 @@ def _cfg(**overrides):
         policy="mixed",
         protocol_commit="ce4c962",
         matrix_hash="abc",
-        source_commit="def",
+        evaluator_fingerprint="def",
         tta_seed_config_sha256="cfg_sha256_abc",
         tta_seed_freeze_commit="c" * 40,
         tta_seed_derivation_sha256="4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
@@ -495,6 +502,7 @@ def test_production_evaluation_identity_uses_frozen_seed():
         ("aggregators", ("mean_probability",)),
         ("policy", "geometric"),
         ("matrix_hash", "different"),
+        ("evaluator_fingerprint", "different_fingerprint"),
         ("tta_seed_config_sha256", "different_sha"),
         ("tta_seed_freeze_commit", "d" * 40),
         ("tta_seed_derivation_sha256", "0" * 64),
@@ -1019,6 +1027,8 @@ def _valid_metadata():
         "protocol_commit": "ce4c962",
         "matrix_hash": "m1",
         "source_commit": "s1",
+        "evaluator_fingerprint": "fp1",
+        "evaluator_fingerprint_manifest": {"src/when_tta_hurts/metrics.py": "abc123"},
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
@@ -1040,12 +1050,28 @@ def _valid_view_manifest():
     }
 
 
+_VALID_PREFIX_SEQUENCE = (1, 2, 5, 10, 25, 50, 100)
+
+
+def _valid_latency(n_samples=3, prefix_sequence=_VALID_PREFIX_SEQUENCE, clean_latency=0.01):
+    by_n = {}
+    for n in prefix_sequence:
+        tta = clean_latency * n
+        by_n[str(n)] = {
+            "tta_latency_seconds": tta,
+            "per_sample_latency_seconds": tta / n_samples,
+            "compute_multiplier": tta / clean_latency,
+        }
+    return {"clean_latency_seconds": clean_latency, "n_samples": n_samples, "by_n": by_n}
+
+
 def _valid_metrics():
     return {
         "training_run_id": "r1",
         "evaluation_config_hash": "e1",
         "clean": {"accuracy": 1.0 / 3},
         "conditions": {},
+        "latency": _valid_latency(),
     }
 
 
@@ -1059,6 +1085,7 @@ def test_metadata_schema_rejects_test_split():
             metrics=_valid_metrics(),
             metadata=metadata,
             view_manifest=_valid_view_manifest(),
+            prefix_sequence=_VALID_PREFIX_SEQUENCE,
         )
 
 
@@ -1072,6 +1099,7 @@ def test_persist_and_verify_full_round_trip(tmp_path):
         metrics=metrics,
         metadata=_valid_metadata(),
         view_manifest=_valid_view_manifest(),
+        prefix_sequence=_VALID_PREFIX_SEQUENCE,
         metric_recomputers={
             "clean.accuracy": (
                 metrics["clean"]["accuracy"],
@@ -1099,6 +1127,7 @@ def test_persist_rejects_metric_recomputation_mismatch(tmp_path):
             metrics=metrics,
             metadata=_valid_metadata(),
             view_manifest=_valid_view_manifest(),
+            prefix_sequence=_VALID_PREFIX_SEQUENCE,
             metric_recomputers={
                 "clean.accuracy": (
                     0.999,
@@ -1262,8 +1291,11 @@ def _init_git_repo(tmp_path):
 
 
 def test_dirty_source_tree_fails_before_attempt_allocation(tmp_path, monkeypatch):
+    from pathlib import Path
+
     from when_tta_hurts.orchestrator import DirtyWorkingTreeError
 
+    real_repo_root = Path.cwd()
     _init_git_repo(tmp_path)
     (tmp_path / "src_file.py").write_text("x = 2\n")  # dirty, unapproved path
     monkeypatch.chdir(tmp_path)
@@ -1310,6 +1342,7 @@ def test_dirty_source_tree_fails_before_attempt_allocation(tmp_path, monkeypatch
             tta_seed_git_tracked_and_clean=_always_tracked_clean,
             tta_seed_last_commit_for_path=_commit_for("c" * 40),
             tta_seed_commit_is_ancestor=_all_ancestors,
+            evaluator_fingerprint_repo_root=real_repo_root,
         )
     after = set(tmp_path.rglob("*"))
     assert not root.exists()
@@ -1402,3 +1435,502 @@ def test_production_order_attempt_allocation_before_mps():
 
     source = inspect.getsource(run_validation_evaluation)
     assert source.index("start_evaluation_attempt(") < source.index("device_resolver()")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering: evaluator-implementation fingerprint
+# ---------------------------------------------------------------------------
+
+
+def test_evaluator_fingerprint_manifest_excludes_docs_and_ledgers():
+    """Ledger/audit-document commits must never change the fingerprint --
+    proven structurally here rather than by actually committing."""
+    for path in EVALUATOR_FINGERPRINT_MANIFEST:
+        assert not path.startswith("docs/"), path
+        assert not path.startswith("artifacts/"), path
+        assert "ledger" not in path, path
+
+
+def test_real_evaluator_fingerprint_manifest_files_all_exist():
+    """Every file in the frozen, real production manifest must exist in
+    THIS repo -- proves the manifest isn't stale/aspirational."""
+    fingerprint, files = compute_evaluator_fingerprint()
+    assert set(files) == set(EVALUATOR_FINGERPRINT_MANIFEST)
+    assert all(len(h) == 64 for h in files.values())
+    assert len(fingerprint) == 64
+
+
+def test_evaluator_fingerprint_deterministic(tmp_path):
+    manifest = ("a.py", "b.py")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("y = 2\n")
+    fp1, files1 = compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+    fp2, files2 = compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+    assert fp1 == fp2
+    assert files1 == files2
+
+
+def test_evaluator_fingerprint_changes_when_a_manifested_file_changes(tmp_path):
+    manifest = ("a.py",)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    fp1, _ = compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+    (tmp_path / "a.py").write_text("x = 2\n")
+    fp2, _ = compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+    assert fp1 != fp2
+
+
+def test_evaluator_fingerprint_unaffected_by_unrelated_file(tmp_path):
+    manifest = ("a.py",)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "unrelated_doc.md").write_text("hello\n")
+    fp1, _ = compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+    (tmp_path / "unrelated_doc.md").write_text("hello world, edited\n")
+    fp2, _ = compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+    assert fp1 == fp2
+
+
+def test_evaluator_fingerprint_missing_file_hard_fails(tmp_path):
+    manifest = ("does_not_exist.py",)
+    with pytest.raises(EvaluatorFingerprintError):
+        compute_evaluator_fingerprint(repo_root=tmp_path, manifest=manifest)
+
+
+def test_evaluation_config_has_no_source_commit_field():
+    """Structural proof that git HEAD cannot be hashed into evaluation_id
+    -- ValidationEvaluationConfig no longer has a source_commit field at
+    all; only evaluator_fingerprint (stable) is hashed."""
+    import dataclasses
+
+    field_names = {f.name for f in dataclasses.fields(ValidationEvaluationConfig)}
+    assert "source_commit" not in field_names
+    assert "evaluator_fingerprint" in field_names
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering: ambiguous-completion hard failure
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_completed_matching_hash_raise_ambiguous(tmp_path):
+    from when_tta_hurts.artifacts import atomic_write_json
+    from when_tta_hurts.evaluation_result_artifacts import build_evaluation_artifact_manifest
+    from when_tta_hurts.ledger import append_evaluation_entry
+
+    ledger_path = tmp_path / "ledger.csv"
+    run_id = "ambiguous-run"
+    for _ in range(2):
+        attempt_dir, status = start_evaluation_attempt(
+            run_id, "hash-same", root=tmp_path, ledger_path=ledger_path
+        )
+        finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+        (attempt_dir / "predictions.npz").write_bytes(b"x")
+        (attempt_dir / "metrics.json").write_text("{}")
+        (attempt_dir / "metadata.json").write_text("{}")
+        (attempt_dir / "view_manifest.json").write_text("{}")
+        manifest = build_evaluation_artifact_manifest(attempt_dir)
+        atomic_write_json(manifest, attempt_dir / "artifact_manifest.json")
+        append_evaluation_entry(
+            evaluation_id="hash-same",
+            training_run_id=run_id,
+            training_attempt=1,
+            checkpoint_hash="ckpt",
+            evaluation_config_hash="hash-same",
+            evaluation_attempt=status.attempt_number,
+            status="completed",
+            primary_artifact_hash="art",
+            started_at=status.started_at,
+            ended_at=status.ended_at,
+            runtime_seconds=1.0,
+            ledger_path=ledger_path,
+        )
+
+    with pytest.raises(AmbiguousEvaluationCompletionError):
+        check_evaluation_skip(run_id, "hash-same", root=tmp_path, ledger_path=ledger_path)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering: idempotent skip stable across a simulated
+# ledger/results-record commit (HEAD change)
+# ---------------------------------------------------------------------------
+
+
+def test_completed_evaluation_skips_before_heavy_dependency_and_survives_head_change(tmp_path, monkeypatch):
+    import when_tta_hurts.validation_evaluation as ve
+
+    def fake_resolve(run_id, matrix_path):
+        cell = type(
+            "FakeCell",
+            (),
+            {
+                "run_id": lambda self: run_id,
+                "dataset": "pathmnist",
+                "resolution": 28,
+                "block": "A_core_normalization_resolution",
+                "model": "small_cnn",
+                "normalization": "batchnorm",
+                "training_policy": "none",
+                "seed": 0,
+            },
+        )()
+        result = type(
+            "R", (), {"attempt_number": 3, "checkpoint_hash": "ckpt-fixed", "status": "completed"}
+        )()
+        return cell, result
+
+    monkeypatch.setattr(ve, "resolve_canonical_training_completion", fake_resolve)
+    monkeypatch.setattr(
+        ve, "parse_and_validate_matrix", lambda *a, **k: type("E", (), {"source_config_hash": "matrixhash"})()
+    )
+
+    seed_cfg_path = tmp_path / "validation_evaluation.yaml"
+    seed_cfg_path.write_text(_VALID_YAML_TEXT)
+    root = tmp_path / "eval_root"
+    ledger_path = tmp_path / "ledger.csv"
+
+    cell, training_result = fake_resolve("fake-run", None)
+    seed_cfg = load_frozen_tta_seed_config(
+        seed_cfg_path,
+        git_tracked_and_clean=_always_tracked_clean,
+        last_commit_for_path=_commit_for("c" * 40),
+        commit_is_ancestor=_all_ancestors,
+    )
+    fingerprint, _ = compute_evaluator_fingerprint()
+    cfg = build_validation_evaluation_config(cell, training_result, seed_cfg, "matrixhash", fingerprint)
+    evaluation_id = compute_evaluation_id(cfg)
+
+    attempt_dir, status = start_evaluation_attempt(
+        "fake-run", evaluation_id, root=root, ledger_path=ledger_path
+    )
+    predictions = {
+        "labels": np.array([0, 1, 2]),
+        "sample_indices": np.array([0, 1, 2]),
+        "clean_probs": np.full((3, 3), 1 / 3, dtype=np.float32),
+        "view_probs": np.full((100, 3, 3), 1 / 3, dtype=np.float32),
+    }
+    metadata = _valid_metadata()
+    metadata.update(
+        evaluation_id=evaluation_id,
+        training_run_id="fake-run",
+        checkpoint_hash="ckpt-fixed",
+        evaluation_config_hash=evaluation_id,
+        n_validation_samples=3,
+    )
+    metrics = {
+        "training_run_id": "fake-run",
+        "evaluation_config_hash": evaluation_id,
+        "clean": {"accuracy": 1 / 3},
+        "conditions": {},
+        "latency": _valid_latency(n_samples=3),
+    }
+    persist_and_verify_evaluation_completion(
+        attempt_dir,
+        predictions=predictions,
+        metrics=metrics,
+        metadata=metadata,
+        view_manifest=_valid_view_manifest(),
+        prefix_sequence=_VALID_PREFIX_SEQUENCE,
+    )
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    from when_tta_hurts.ledger import append_evaluation_entry
+
+    append_evaluation_entry(
+        evaluation_id=evaluation_id,
+        training_run_id="fake-run",
+        training_attempt=3,
+        checkpoint_hash="ckpt-fixed",
+        evaluation_config_hash=evaluation_id,
+        evaluation_attempt=status.attempt_number,
+        status="completed",
+        primary_artifact_hash="art",
+        started_at=status.started_at,
+        ended_at=status.ended_at,
+        runtime_seconds=1.0,
+        ledger_path=ledger_path,
+    )
+
+    def _explode(*a, **k):
+        raise AssertionError("heavy dependency reached -- idempotent skip failed to short-circuit")
+
+    # Simulate a ledger/results-record commit having advanced HEAD since
+    # the completed attempt: evaluation_id must be computed identically
+    # regardless (it no longer hashes the current git commit at all).
+    monkeypatch.setattr(ve, "_git_commit_hash", lambda: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+
+    result = ve.run_validation_evaluation(
+        "fake-run",
+        device_resolver=_explode,
+        root=root,
+        evaluation_ledger_path=ledger_path,
+        tta_seed_config_path=seed_cfg_path,
+        tta_seed_git_tracked_and_clean=_always_tracked_clean,
+        tta_seed_last_commit_for_path=_commit_for("c" * 40),
+        tta_seed_commit_is_ancestor=_all_ancestors,
+    )
+    assert result["status"] == "skipped_completed"
+    assert result["evaluation_id"] == evaluation_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering: latency persistence
+# ---------------------------------------------------------------------------
+
+
+def test_compute_evaluation_latency_report_uses_frozen_primitives_not_reimplemented():
+    """evaluation/latency.py's measure_clean_latency()/measure_tta_latency()
+    are reused UNCHANGED -- this function must not reimplement timing or
+    synchronization logic itself."""
+    import inspect
+
+    source = inspect.getsource(compute_evaluation_latency_report)
+    assert "measure_clean_latency(" in source
+    assert "measure_tta_latency(" in source
+    assert "time.perf_counter" not in source
+    assert "torch.mps.synchronize" not in source
+
+
+def test_compute_evaluation_latency_report_never_accepts_scientific_values():
+    """Structural proof latency measurement cannot be influenced by, or
+    influence, any scientific result: no labels/predictions/metrics
+    parameter exists on this function at all."""
+    import inspect
+
+    sig = inspect.signature(compute_evaluation_latency_report)
+    assert "labels" not in sig.parameters
+    assert "predictions" not in sig.parameters
+    assert "metrics" not in sig.parameters
+
+
+def test_compute_evaluation_latency_report_reports_every_registered_n():
+    torch.manual_seed(0)
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    model.eval()
+    split = _synthetic_split(n=4, n_classes=3)
+    report = compute_evaluation_latency_report(model, split, 1, torch.device("cpu"))
+
+    assert report.n_samples == 4
+    assert set(report.tta_latency_seconds_by_n.keys()) == {1, 2, 5, 10, 25, 50, 100}
+    for n, total in report.tta_latency_seconds_by_n.items():
+        assert report.per_sample_latency_seconds_by_n[n] == pytest.approx(total / 4)
+        expected_multiplier = (
+            total / report.clean_latency_seconds if report.clean_latency_seconds > 0 else float("inf")
+        )
+        assert report.compute_multiplier_by_n[n] == pytest.approx(expected_multiplier)
+
+
+def test_latency_report_to_dict_has_exactly_registered_n_values():
+    from when_tta_hurts.validation_evaluation import PREFIX_SEQUENCE, _latency_report_to_dict
+
+    torch.manual_seed(0)
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    model.eval()
+    split = _synthetic_split(n=4, n_classes=3)
+    report = compute_evaluation_latency_report(model, split, 1, torch.device("cpu"))
+    d = _latency_report_to_dict(report)
+    assert set(d["by_n"].keys()) == {str(n) for n in PREFIX_SEQUENCE}
+    assert d["n_samples"] == 4
+
+
+def test_compute_evaluation_latency_report_field_equivalent_to_build_latency_report(monkeypatch):
+    """Mechanical-equivalence proof (docs/phase2b_validation_evaluation_
+    engineering_freeze.md sec.1.3): the manually-assembled report and the
+    frozen build_latency_report() convenience wrapper must satisfy the
+    identical per-sample/multiplier formulas for the same inputs."""
+    import when_tta_hurts.validation_evaluation as ve
+
+    monkeypatch.setattr(ve, "PREFIX_SEQUENCE", (1, 2))
+
+    torch.manual_seed(0)
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    model.eval()
+    device = torch.device("cpu")
+    split = _synthetic_split(n=4, n_classes=3)
+    tta_seed = 555
+
+    report = ve.compute_evaluation_latency_report(model, split, tta_seed, device)
+
+    policy = build_policy("mixed", output_size=(split.resolution, split.resolution))
+    sample_indices = split.sample_indices.tolist()
+    ordered_views_by_n = {
+        n: [
+            vb
+            for _idx, vb in iter_deterministic_views(
+                split.images, policy, tta_seed, split.dataset, split.resolution, sample_indices, n
+            )
+        ]
+        for n in (1, 2)
+    }
+    reference = build_latency_report(model, split.images.to(device), ordered_views_by_n, device)
+
+    assert set(report.tta_latency_seconds_by_n) == set(reference.tta_latency_seconds_by_n) == {1, 2}
+    assert report.n_samples == reference.n_samples == 4
+    for n in (1, 2):
+        assert report.per_sample_latency_seconds_by_n[n] == pytest.approx(
+            report.tta_latency_seconds_by_n[n] / report.n_samples
+        )
+        assert reference.per_sample_latency_seconds_by_n[n] == pytest.approx(
+            reference.tta_latency_seconds_by_n[n] / reference.n_samples
+        )
+
+
+def test_latency_measurement_does_not_mutate_scientific_predictions():
+    torch.manual_seed(0)
+    model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    model.eval()
+    device = torch.device("cpu")
+    split = _synthetic_split(n=4, n_classes=3)
+    tta_seed = 42
+
+    outcome = compute_validation_evaluation(model, split, tta_seed, device)
+    before_clean = outcome["predictions"]["clean_probs"].copy()
+    before_view = outcome["predictions"]["view_probs"].copy()
+
+    _ = compute_evaluation_latency_report(model, split, tta_seed, device)
+
+    np.testing.assert_array_equal(outcome["predictions"]["clean_probs"], before_clean)
+    np.testing.assert_array_equal(outcome["predictions"]["view_probs"], before_view)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda lat: lat["by_n"].pop("50"),
+        lambda lat: lat["by_n"].__setitem__("999", dict(lat["by_n"]["1"])),
+        lambda lat: lat.update(clean_latency_seconds=float("nan")),
+        lambda lat: lat["by_n"]["50"].update(tta_latency_seconds=-1.0),
+        lambda lat: lat["by_n"]["50"].update(per_sample_latency_seconds=999.0),
+        lambda lat: lat["by_n"]["50"].update(compute_multiplier=999.0),
+        lambda lat: lat.update(n_samples=999),
+    ],
+)
+def test_persist_rejects_malformed_latency_report(tmp_path, mutate):
+    predictions = _valid_predictions()
+    metrics = _valid_metrics()
+    mutate(metrics["latency"])
+    with pytest.raises(EvaluationPersistenceError):
+        persist_and_verify_evaluation_completion(
+            tmp_path,
+            predictions=predictions,
+            metrics=metrics,
+            metadata=_valid_metadata(),
+            view_manifest=_valid_view_manifest(),
+            prefix_sequence=_VALID_PREFIX_SEQUENCE,
+        )
+
+
+def test_persist_rejects_metrics_missing_latency_section_entirely(tmp_path):
+    predictions = _valid_predictions()
+    metrics = _valid_metrics()
+    del metrics["latency"]
+    with pytest.raises(EvaluationSchemaValidationError):
+        persist_and_verify_evaluation_completion(
+            tmp_path,
+            predictions=predictions,
+            metrics=metrics,
+            metadata=_valid_metadata(),
+            view_manifest=_valid_view_manifest(),
+            prefix_sequence=_VALID_PREFIX_SEQUENCE,
+        )
+
+
+def test_malformed_latency_report_causes_failed_status_never_completed(tmp_path, monkeypatch):
+    """Full run_validation_evaluation() integration proof: an intentionally
+    broken latency report must produce status="failed" in both status.json
+    and the ledger row, never "completed" -- using tiny synthetic
+    dependencies throughout (no real checkpoint/dataset/MPS)."""
+    import csv
+
+    import when_tta_hurts.validation_evaluation as ve
+    from when_tta_hurts.evaluation.latency import LatencyReport
+
+    def fake_resolve(run_id, matrix_path):
+        cell = type(
+            "FakeCell",
+            (),
+            {
+                "run_id": lambda self: run_id,
+                "dataset": "pathmnist",
+                "resolution": 28,
+                "block": "A_core_normalization_resolution",
+                "model": "small_cnn",
+                "normalization": "batchnorm",
+                "training_policy": "none",
+                "seed": 0,
+            },
+        )()
+        result = type("R", (), {"attempt_number": 1, "checkpoint_hash": "ckpt", "status": "completed"})()
+        return cell, result
+
+    monkeypatch.setattr(ve, "resolve_canonical_training_completion", fake_resolve)
+    monkeypatch.setattr(
+        ve, "parse_and_validate_matrix", lambda *a, **k: type("E", (), {"source_config_hash": "m"})()
+    )
+
+    torch.manual_seed(0)
+    tiny_model = build_small_cnn(num_classes=3, normalization="batchnorm")
+    tiny_model.eval()
+    monkeypatch.setattr(ve, "load_and_verify_canonical_checkpoint", lambda *a, **k: tiny_model)
+    split = _synthetic_split(n=4, n_classes=3)
+    monkeypatch.setattr(ve, "load_validation_evaluation_split", lambda *a, **k: split)
+
+    def broken_latency(*a, **k):
+        return LatencyReport(
+            clean_latency_seconds=float("nan"),
+            tta_latency_seconds_by_n=dict.fromkeys(ve.PREFIX_SEQUENCE, 0.0),
+            per_sample_latency_seconds_by_n=dict.fromkeys(ve.PREFIX_SEQUENCE, 0.0),
+            compute_multiplier_by_n=dict.fromkeys(ve.PREFIX_SEQUENCE, 0.0),
+            n_samples=4,
+        )
+
+    monkeypatch.setattr(ve, "compute_evaluation_latency_report", broken_latency)
+
+    seed_cfg_path = tmp_path / "validation_evaluation.yaml"
+    seed_cfg_path.write_text(_VALID_YAML_TEXT)
+    root = tmp_path / "eval_root"
+    ledger_path = tmp_path / "ledger.csv"
+
+    with pytest.raises(EvaluationPersistenceError):
+        ve.run_validation_evaluation(
+            "fake-run-latency-fail",
+            device_resolver=lambda: torch.device("cpu"),
+            root=root,
+            evaluation_ledger_path=ledger_path,
+            tta_seed_config_path=seed_cfg_path,
+            tta_seed_git_tracked_and_clean=_always_tracked_clean,
+            tta_seed_last_commit_for_path=_commit_for("c" * 40),
+            tta_seed_commit_is_ancestor=_all_ancestors,
+            require_clean_tree=False,  # this test proves latency-failure handling, not clean-tree enforcement
+        )
+
+    with ledger_path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["training_run_id"] == "fake-run-latency-fail"
+
+    status_files = list((root / "fake-run-latency-fail").glob("attempt_*/status.json"))
+    assert len(status_files) == 1
+    assert json.loads(status_files[0].read_text())["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering: legacy incident row untouched
+# ---------------------------------------------------------------------------
+
+
+def test_real_incident_row_unchanged_and_remains_attempt_1_aborted():
+    import csv
+
+    with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["evaluation_id"] == "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5"
+    assert row["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
+    assert row["evaluation_attempt"] == "1"
+    assert row["status"] == "aborted"
+
+
+def test_real_next_evaluation_attempt_number_is_still_2():
+    from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
+
+    assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 2
