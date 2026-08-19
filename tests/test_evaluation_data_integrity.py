@@ -64,6 +64,7 @@ inference_batch_size: 256
 bn_adaptation_batch_size: 256
 bn_adaptation_algorithm: sequential_microbatch_v1
 bn_adaptation_enumeration_order: view_major_then_sample_major
+metric_input_contract: probability_native_v1
 """
 
 
@@ -145,6 +146,7 @@ def _valid_metadata(dataset="pathmnist", resolution=28, checksum="a" * 32):
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
+        "metric_input_contract": "probability_native_v1",
     }
 
 

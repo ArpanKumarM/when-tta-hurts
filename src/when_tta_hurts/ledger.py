@@ -506,6 +506,102 @@ def append_evaluation_entry(
     return "appended"
 
 
+# Append-only eligibility-overlay ledger for validation-evaluation attempts
+# (Phase 2B.4D Metric-Contract Correction) -- mirrors AMENDMENTS_LEDGER_PATH's
+# discipline exactly (never rewrites/reorders the base ledger; a completed
+# attempt with no amendment row is eligible by default; amendments are
+# opt-in exceptions, not a default-deny allowlist). Kept separate from
+# AMENDMENTS_LEDGER_PATH because its keying and field set are
+# evaluation-specific (evaluation_id/evaluation_attempt, not
+# run_id/attempt_id).
+EVALUATION_AMENDMENTS_LEDGER_PATH = Path("artifacts/ledger_validation_evaluation_amendments.csv")
+
+EVALUATION_AMENDMENTS_LEDGER_FIELDNAMES: tuple[str, ...] = (
+    "evaluation_id",
+    "evaluation_attempt",
+    "historical_status",
+    "canonical_eligible",
+    "reason",
+    "validation_metrics_observed",
+    "test_metrics_observed",
+    "artifacts_preserved",
+    "rerun_required",
+    "predictions_sha256",
+    "source_commit",
+    "recorded_at",
+)
+
+
+def ensure_evaluation_amendments_ledger_exists(
+    ledger_path: str | Path = EVALUATION_AMENDMENTS_LEDGER_PATH,
+) -> bool:
+    """Create a HEADER-ONLY evaluation-amendments ledger file if it does
+    not already exist. Writes NO data row. Returns True if created, False
+    if it already existed (no-op)."""
+    path = Path(ledger_path)
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(EVALUATION_AMENDMENTS_LEDGER_FIELDNAMES))
+        writer.writeheader()
+    return True
+
+
+def append_evaluation_amendment_entry(
+    *,
+    evaluation_id: str,
+    evaluation_attempt: int,
+    historical_status: str,
+    canonical_eligible: bool,
+    reason: str,
+    validation_metrics_observed: bool,
+    test_metrics_observed: bool,
+    artifacts_preserved: bool,
+    rerun_required: bool,
+    predictions_sha256: str,
+    source_commit: str,
+    recorded_at: str,
+    ledger_path: str | Path = EVALUATION_AMENDMENTS_LEDGER_PATH,
+) -> str:
+    """Append one evaluation eligibility-overlay row. Idempotent on
+    (evaluation_id, evaluation_attempt): identical duplicate ->
+    'duplicate_ignored'; conflicting duplicate -> LedgerConflictError
+    (never silently overwritten), exactly like append_amendment_entry()."""
+    row = {
+        "evaluation_id": evaluation_id,
+        "evaluation_attempt": evaluation_attempt,
+        "historical_status": historical_status,
+        "canonical_eligible": canonical_eligible,
+        "reason": reason,
+        "validation_metrics_observed": validation_metrics_observed,
+        "test_metrics_observed": test_metrics_observed,
+        "artifacts_preserved": artifacts_preserved,
+        "rerun_required": rerun_required,
+        "predictions_sha256": predictions_sha256,
+        "source_commit": source_commit,
+        "recorded_at": recorded_at,
+    }
+    row_str = {k: str(v) for k, v in row.items()}
+
+    existing_rows = _read_existing_rows(ledger_path)
+    for existing in existing_rows:
+        if existing.get("evaluation_id") == evaluation_id and existing.get("evaluation_attempt") == str(
+            evaluation_attempt
+        ):
+            if existing == row_str:
+                return "duplicate_ignored"
+            raise LedgerConflictError(
+                f"Evaluation-amendments ledger already has a DIFFERENT row for "
+                f"evaluation_id={evaluation_id}, evaluation_attempt={evaluation_attempt}. "
+                f"Existing: {existing}. New: {row_str}. Hard failure -- refusing to append "
+                f"a conflicting duplicate."
+            )
+
+    append_ledger_row(row, ledger_path)
+    return "appended"
+
+
 class LedgerSchemaError(RuntimeError):
     """Raised when a ledger row contains a malformed value for a field
     that must be strictly boolean (e.g. canonical_eligible). Fails
@@ -543,6 +639,30 @@ def is_canonical_ineligible(
                 context=(
                     f"amendments ledger row (run_id={run_id}, attempt_id={attempt_id}), "
                     f"field 'canonical_eligible'"
+                ),
+            )
+            if not eligible:
+                return True
+    return False
+
+
+def is_evaluation_canonical_ineligible(
+    evaluation_id: str, evaluation_attempt: int, ledger_path: str | Path = EVALUATION_AMENDMENTS_LEDGER_PATH
+) -> bool:
+    """True iff the evaluation-amendments ledger has a row for
+    (evaluation_id, evaluation_attempt) with canonical_eligible == False.
+    A completed evaluation attempt with NO amendment row is eligible by
+    default. Raises LedgerSchemaError (fails closed) if a matching row's
+    canonical_eligible field is not a valid boolean token."""
+    for row in _read_existing_rows(ledger_path):
+        if row.get("evaluation_id") == evaluation_id and row.get("evaluation_attempt") == str(
+            evaluation_attempt
+        ):
+            eligible = _parse_canonical_bool(
+                row.get("canonical_eligible"),
+                context=(
+                    f"evaluation-amendments ledger row (evaluation_id={evaluation_id}, "
+                    f"evaluation_attempt={evaluation_attempt}), field 'canonical_eligible'"
                 ),
             )
             if not eligible:

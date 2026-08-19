@@ -62,6 +62,7 @@ from when_tta_hurts.matrix import MatrixCell, parse_and_validate_matrix
 from when_tta_hurts.metrics import (
     accuracy,
     brier_score,
+    compute_metrics_from_probabilities,
     expected_calibration_error,
     harm_rescue_rates,
     macro_f1,
@@ -224,6 +225,13 @@ BN_ADAPTATION_BATCH_SIZE = 256
 BN_ADAPTATION_ALGORITHM = "sequential_microbatch_v1"
 BN_ADAPTATION_ENUMERATION_ORDER = "view_major_then_sample_major"
 
+# --- Phase 2B.4D Metric-Contract Correction: frozen metric-input contract ---
+# See docs/phase2b_validation_evaluation_metric_contract_freeze.md and
+# docs/phase2b_validation_evaluation_metric_contract_incident.md.
+# Cross-validated against configs/validation_evaluation.yaml exactly like
+# the batching fields above.
+METRIC_INPUT_CONTRACT = "probability_native_v1"
+
 
 class FrozenTTASeedConfigError(RuntimeError):
     """Raised whenever the frozen confirmatory TTA-seed configuration
@@ -254,6 +262,7 @@ class FrozenTTASeedConfig:
     bn_adaptation_batch_size: int
     bn_adaptation_algorithm: str
     bn_adaptation_enumeration_order: str
+    metric_input_contract: str
 
 
 _REQUIRED_TTA_SEED_CONFIG_FIELDS = {
@@ -272,6 +281,7 @@ _REQUIRED_TTA_SEED_CONFIG_FIELDS = {
     "bn_adaptation_batch_size",
     "bn_adaptation_algorithm",
     "bn_adaptation_enumeration_order",
+    "metric_input_contract",
 }
 
 
@@ -383,6 +393,11 @@ def load_frozen_tta_seed_config(
             f"{path} bn_adaptation_enumeration_order={raw['bn_adaptation_enumeration_order']!r} "
             f"diverges from {BN_ADAPTATION_ENUMERATION_ORDER!r}."
         )
+    if raw["metric_input_contract"] != METRIC_INPUT_CONTRACT:
+        raise FrozenTTASeedConfigError(
+            f"{path} metric_input_contract={raw['metric_input_contract']!r} diverges from "
+            f"{METRIC_INPUT_CONTRACT!r}."
+        )
 
     freeze_commit = last_commit_for_path(path)
     if freeze_commit is None:
@@ -415,6 +430,7 @@ def load_frozen_tta_seed_config(
         bn_adaptation_batch_size=raw["bn_adaptation_batch_size"],
         bn_adaptation_algorithm=raw["bn_adaptation_algorithm"],
         bn_adaptation_enumeration_order=raw["bn_adaptation_enumeration_order"],
+        metric_input_contract=raw["metric_input_contract"],
     )
 
 
@@ -726,6 +742,7 @@ def check_evaluation_skip(
     evaluation_config_hash: str,
     root: str | Path = DEFAULT_EVALUATION_ROOT,
     ledger_path=None,
+    evaluation_amendments_ledger_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Metadata-only: does NOT touch MPS, the checkpoint, the dataset, view
     generation, or metric calculation -- only reads status.json/
@@ -767,6 +784,9 @@ def check_evaluation_skip(
     """
     from when_tta_hurts import ledger as ledger_module
     from when_tta_hurts.evaluation_result_artifacts import verify_evaluation_artifact_manifest
+
+    if evaluation_amendments_ledger_path is None:
+        evaluation_amendments_ledger_path = ledger_module.EVALUATION_AMENDMENTS_LEDGER_PATH
 
     run_dir = evaluation_run_directory(training_run_id, root)
     all_attempts = list_evaluation_attempts(training_run_id, root)
@@ -813,6 +833,20 @@ def check_evaluation_skip(
     conflicting_completed = []
     for status in all_attempts:
         if status.get("status") != EvaluationRunStatus.COMPLETED.value:
+            continue
+        if ledger_module.is_evaluation_canonical_ineligible(
+            status["evaluation_config_hash"], status["attempt_number"], evaluation_amendments_ledger_path
+        ):
+            # Amendment-ledger override (Phase 2B.4D Part G): a completed
+            # attempt explicitly recorded canonical-ineligible (e.g. attempt
+            # 3's probability_metric_double_softmax amendment) must never be
+            # selected for idempotent skip AND must never be treated as a
+            # conflicting/blocking canonical completion once the defect it
+            # was excluded for has been corrected underneath a new
+            # evaluation_config_hash -- it is simply excluded from both
+            # matching_completed and conflicting_completed, as if it were
+            # not a completed attempt for the purposes of this decision.
+            # The attempt's directory/artifacts/ledger row remain untouched.
             continue
         if status["evaluation_config_hash"] != evaluation_config_hash:
             # NOT "irrelevant" -- an existing completed evaluation under a
@@ -973,18 +1007,164 @@ def load_and_verify_canonical_checkpoint(
 
 
 def _per_prefix_metrics(clean_probs: np.ndarray, agg_probs: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
+    """`agg_probs` is ALWAYS an already-normalized probability
+    distribution at every call site in this module (mean-probability,
+    majority-vote, confidence-weighted, original-anchored, and BN-adapted
+    aggregates are all recovered via exactly one softmax before reaching
+    this function). Per metric_input_contract: probability_native_v1
+    (docs/phase2b_validation_evaluation_metric_contract_freeze.md),
+    `agg_probs` is passed to compute_metrics_from_probabilities(), which
+    NEVER calls softmax -- this is the exact fix for the double-softmax
+    defect recorded in
+    docs/phase2b_validation_evaluation_metric_contract_incident.md.
+    `harm_rescue_rates()` is unaffected either way (argmax-only, no
+    internal softmax of any kind)."""
     clean_logp = np.log(np.clip(clean_probs, 1e-12, 1.0))
     hr = harm_rescue_rates(clean_logp, agg_probs, labels)
+    prob_metrics = compute_metrics_from_probabilities(agg_probs, labels)
     return {
-        "accuracy": accuracy(agg_probs, labels),
-        "macro_f1": macro_f1(agg_probs, labels),
-        "negative_log_likelihood": negative_log_likelihood(agg_probs, labels),
-        "expected_calibration_error": expected_calibration_error(agg_probs, labels),
-        "brier_score": brier_score(agg_probs, labels),
-        "delta_accuracy": accuracy(agg_probs, labels) - accuracy(clean_logp, labels),
+        "accuracy": prob_metrics["accuracy"],
+        "macro_f1": prob_metrics["macro_f1"],
+        "negative_log_likelihood": prob_metrics["negative_log_likelihood"],
+        "expected_calibration_error": prob_metrics["expected_calibration_error"],
+        "brier_score": prob_metrics["brier_score"],
+        "delta_accuracy": prob_metrics["accuracy"] - accuracy(clean_logp, labels),
         "harm_rate": hr["harm_rate"],
         "rescue_rate": hr["rescue_rate"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Semantic artifact self-verification (Phase 2B.4D Metric-Contract
+# Correction, Part F) -- recomputes EVERY persisted per-condition metric
+# directly from persisted probability arrays (no model, no device, no
+# re-inference) using the corrected probability-native contract, and
+# compares against the in-memory metrics about to be persisted. A
+# completed evaluation must be validated mathematically, not only
+# structurally: this runs BEFORE persist_and_verify_evaluation_completion()
+# (which only checks schema/shape/manifest hashes), so a semantic
+# inconsistency fails the attempt (status="failed") before any file is
+# written, exactly like every other pre-write validation step in this
+# module.
+# ---------------------------------------------------------------------------
+
+
+def _recompute_all_conditions_from_predictions(
+    predictions: dict[str, np.ndarray], prefix_sequence: tuple[int, ...]
+) -> dict[str, Any]:
+    """Recompute every per-condition metric field directly from
+    `predictions` (the exact arrays about to be written to
+    predictions.npz), using the SAME frozen aggregation functions and the
+    corrected, probability-native `_per_prefix_metrics()`. Never touches a
+    model, a device, or view generation -- purely a function of already-
+    computed probability arrays. `predictions["bn_adapted_probs"]` (if
+    present) must already be the Part-F stacked-by-N array."""
+    labels = predictions["labels"]
+    clean_probs = predictions["clean_probs"]
+    view_probs = predictions["view_probs"]
+    view_log_probs = np.log(np.clip(view_probs, 1e-12, 1.0))
+    # log(p) is a valid logit-equivalent input (softmax(log(p)) == p
+    # exactly) -- see the metric-contract freeze document's hand-
+    # calculated proof. predictions.npz never stores raw clean logits.
+    clean_logits_equivalent = np.log(np.clip(clean_probs, 1e-12, 1.0))
+
+    conditions: dict[str, Any] = {"naive_tta": {agg: {} for agg in AGGREGATORS}}
+    for n in prefix_sequence:
+        conditions["naive_tta"]["mean_probability"][n] = _per_prefix_metrics(
+            clean_probs, softmax(mean_probability(view_log_probs, n)), labels
+        )
+        _, vote_log_probs = majority_vote(view_log_probs, n)
+        conditions["naive_tta"]["majority_vote"][n] = _per_prefix_metrics(
+            clean_probs, softmax(vote_log_probs), labels
+        )
+        conditions["naive_tta"]["confidence_weighted_average"][n] = _per_prefix_metrics(
+            clean_probs, softmax(confidence_weighted_average(view_log_probs, n)), labels
+        )
+
+    conditions["original_anchored_tta"] = {
+        n: _per_prefix_metrics(
+            clean_probs,
+            softmax(original_anchored_mean_probability(clean_logits_equivalent, view_log_probs, n)),
+            labels,
+        )
+        for n in prefix_sequence
+    }
+
+    if "bn_adapted_probs" in predictions:
+        bn_probs = predictions["bn_adapted_probs"]
+        bn_prefix_sequence = predictions["bn_adapted_prefix_sequence"].tolist()
+        conditions["bn_adapted_tta"] = {
+            n: _per_prefix_metrics(clean_probs, bn_probs[i], labels) for i, n in enumerate(bn_prefix_sequence)
+        }
+    else:
+        conditions["bn_adapted_tta"] = None
+
+    return conditions
+
+
+def _verify_metrics_semantically(
+    predictions: dict[str, np.ndarray],
+    metrics: dict[str, Any],
+    prefix_sequence: tuple[int, ...],
+    *,
+    atol: float = 1e-6,
+    rtol: float = 1e-6,
+) -> None:
+    """Recompute every persisted metric from persisted probabilities
+    (Part F) and compare against `metrics` within a predeclared tolerance.
+    Raises EvaluationPersistenceError on ANY mismatch -- never producing
+    status="completed" on a semantic inconsistency."""
+    labels = predictions["labels"]
+    clean_probs = predictions["clean_probs"]
+
+    def _compare(path: str, recomputed: float, persisted: float) -> None:
+        if not np.isclose(recomputed, persisted, atol=atol, rtol=rtol):
+            raise EvaluationPersistenceError(
+                f"Semantic metric verification failed at {path}: recomputed={recomputed!r}, "
+                f"persisted={persisted!r} (atol={atol}, rtol={rtol})."
+            )
+
+    clean_recomputed = compute_metrics_from_probabilities(clean_probs, labels)
+    for k, v in clean_recomputed.items():
+        _compare(f"clean.{k}", v, metrics["clean"][k])
+
+    recomputed_conditions = _recompute_all_conditions_from_predictions(predictions, prefix_sequence)
+    persisted_conditions = metrics["conditions"]
+
+    for agg in AGGREGATORS:
+        for n in prefix_sequence:
+            recomputed_entry = recomputed_conditions["naive_tta"][agg][n]
+            persisted_entry = persisted_conditions["naive_tta"][agg][n]
+            for k, v in recomputed_entry.items():
+                _compare(f"naive_tta.{agg}.{n}.{k}", v, persisted_entry[k])
+
+    for n in prefix_sequence:
+        recomputed_entry = recomputed_conditions["original_anchored_tta"][n]
+        persisted_entry = persisted_conditions["original_anchored_tta"][n]
+        for k, v in recomputed_entry.items():
+            _compare(f"original_anchored_tta.{n}.{k}", v, persisted_entry[k])
+
+    if recomputed_conditions["bn_adapted_tta"] is not None:
+        if persisted_conditions.get("bn_adapted_tta") is None:
+            raise EvaluationPersistenceError(
+                "Semantic verification failed: recomputed bn_adapted_tta conditions exist but "
+                "persisted metrics['conditions']['bn_adapted_tta'] is None/missing."
+            )
+        for n, recomputed_entry in recomputed_conditions["bn_adapted_tta"].items():
+            persisted_entry = persisted_conditions["bn_adapted_tta"][n]
+            for k, v in recomputed_entry.items():
+                _compare(f"bn_adapted_tta.{n}.{k}", v, persisted_entry[k])
+    elif persisted_conditions.get("bn_adapted_tta") is not None:
+        # The reverse gap (Part F): metrics.json reports bn_adapted_tta
+        # results but predictions has no bn_adapted_probs/prefix_sequence
+        # evidence to independently recompute them from -- a persisted BN
+        # metric that cannot be recomputed from persisted evidence must
+        # fail closed, not be silently accepted.
+        raise EvaluationPersistenceError(
+            "Semantic verification failed: persisted metrics['conditions']['bn_adapted_tta'] is "
+            "reported but predictions has no bn_adapted_probs/bn_adapted_prefix_sequence evidence "
+            "to independently recompute it from."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1139,7 +1319,19 @@ def compute_validation_evaluation(
         "view_probs": view_probs,
     }
     if bn_adapted_probs_by_n:
-        predictions["bn_adapted_probs"] = bn_adapted_probs_by_n[max(bn_adapted_probs_by_n)].astype(np.float32)
+        # Phase 2B.4D Metric-Contract Correction, Part F artifact-design fix:
+        # persist bn_adapted_probs for EVERY registered N (not just the max),
+        # stacked in PREFIX_SEQUENCE order, mirroring view_probs' convention
+        # -- every reported bn_adapted_tta[n] metric must have corresponding
+        # persisted probability evidence it can be independently recomputed
+        # from (see docs/phase2b_validation_evaluation_metric_contract_incident.md
+        # sec.7 and the accompanying engineering report). No new scientific
+        # condition is added -- this only persists evidence for the
+        # already-frozen bn_adapted_tta condition at every already-frozen N.
+        predictions["bn_adapted_probs"] = np.stack(
+            [bn_adapted_probs_by_n[n] for n in PREFIX_SEQUENCE], axis=0
+        ).astype(np.float32)
+        predictions["bn_adapted_prefix_sequence"] = np.array(PREFIX_SEQUENCE, dtype=np.int64)
 
     return {
         "predictions": predictions,
@@ -1481,6 +1673,7 @@ def run_validation_evaluation(
                 "artifact_path": dataset_verification.artifact_path,
             },
             "batching": outcome["batching"],
+            "metric_input_contract": seed_cfg.metric_input_contract,
             "evaluation_config_hash": evaluation_id,
             "split": "validation",
             "n_validation_samples": len(split.sample_indices),
@@ -1521,6 +1714,8 @@ def run_validation_evaluation(
                 _recompute_n50_mean_probability_accuracy,
             ),
         }
+
+        _verify_metrics_semantically(outcome["predictions"], metrics, PREFIX_SEQUENCE)
 
         manifest = persist_and_verify_evaluation_completion(
             attempt_dir,

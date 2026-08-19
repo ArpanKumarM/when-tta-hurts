@@ -533,6 +533,7 @@ def _valid_metadata_dict():
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
+        "metric_input_contract": "probability_native_v1",
     }
 
 

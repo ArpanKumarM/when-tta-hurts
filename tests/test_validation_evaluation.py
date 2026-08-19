@@ -98,6 +98,7 @@ inference_batch_size: 256
 bn_adaptation_batch_size: 256
 bn_adaptation_algorithm: sequential_microbatch_v1
 bn_adaptation_enumeration_order: view_major_then_sample_major
+metric_input_contract: probability_native_v1
 """
 
 
@@ -276,6 +277,7 @@ def test_training_and_pilot_seeds_fail(tmp_path, seed):
         ("primary_aggregation", "majority_vote"),
         ("policy_identifier", "geometric"),
         ("total_generated_views", 50),
+        ("metric_input_contract", "legacy_double_softmax_v0"),
     ],
 )
 def test_altered_view_config_fails(tmp_path, field, value):
@@ -1073,6 +1075,7 @@ def _valid_metadata():
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
+        "metric_input_contract": "probability_native_v1",
     }
 
 
@@ -1273,6 +1276,114 @@ def test_aborted_attempt_never_causes_completed_skip(tmp_path):
     _append_row(ledger_path, "eid3", run_id, status.attempt_number, "aborted")
     skip = check_evaluation_skip(run_id, "eid3", root=tmp_path, ledger_path=ledger_path)
     assert skip is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D Part G: canonical-eligibility amendments applied to
+# check_evaluation_skip()/next_evaluation_attempt_number(), using the exact
+# real attempt-1/2/3 evaluation_id sequence (attempt 1 aborted, attempt 2
+# failed from BN-adaptation OOM, attempt 3 completed but recorded
+# canonical-ineligible for probability_metric_double_softmax).
+# ---------------------------------------------------------------------------
+
+_REAL_ATTEMPT_1_ID = "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5"
+_REAL_ATTEMPT_2_ID = "96fbf4705bf93f4e2115fb33b9837df1095c90549d1f86ed1b1c1c160cc7fffe"
+_REAL_ATTEMPT_3_ID = "75aa7e37a9fe5454bf8edf6483d676a182d6dde9ff4a3730e4ada7195e09eb9e"
+_REAL_ATTEMPT_3_PREDICTIONS_SHA256 = "c9930c594f974f6d4019475cbcb51d4896a1bf27d497628ef42457038d77823a"
+
+
+def _complete_attempt_with_manifest(run_id, evaluation_id, attempt_number_expected, tmp_path, ledger_path):
+    from when_tta_hurts.artifacts import atomic_write_json
+    from when_tta_hurts.evaluation_result_artifacts import build_evaluation_artifact_manifest
+
+    attempt_dir, status = start_evaluation_attempt(
+        run_id, evaluation_id, root=tmp_path, ledger_path=ledger_path
+    )
+    assert status.attempt_number == attempt_number_expected
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    (attempt_dir / "predictions.npz").write_bytes(b"x")
+    (attempt_dir / "metrics.json").write_text("{}")
+    (attempt_dir / "metadata.json").write_text("{}")
+    (attempt_dir / "view_manifest.json").write_text("{}")
+    manifest = build_evaluation_artifact_manifest(attempt_dir)
+    atomic_write_json(manifest, attempt_dir / "artifact_manifest.json")
+    _append_row(
+        ledger_path,
+        evaluation_id,
+        run_id,
+        status.attempt_number,
+        "completed",
+        primary_artifact_hash="art",
+        ended_at=2.0,
+        runtime_seconds=1.0,
+    )
+    return attempt_dir, status
+
+
+def test_real_attempt_1_2_3_sequence_attempt_3_ineligible_next_is_4(tmp_path):
+    """Production regression test (Part G): replays the exact real
+    attempt-1 (aborted) / attempt-2 (failed) / attempt-3 (completed,
+    amended canonical_eligible=False) sequence. Confirms attempt 3 is
+    never selected for idempotent skip, never triggers
+    ConflictingEvaluationImplementationError once a corrected config hash
+    is requested, and that the next attempt number is 4."""
+    from when_tta_hurts.ledger import append_evaluation_amendment_entry
+    from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
+
+    run_id = "A-real-attempt-sequence-run"
+    ledger_path = tmp_path / "ledger_validation_evaluation.csv"
+    amendments_ledger_path = tmp_path / "ledger_validation_evaluation_amendments.csv"
+
+    # Attempt 1: aborted, ledger-only (mirrors the real incident -- directory deleted).
+    _append_row(ledger_path, _REAL_ATTEMPT_1_ID, run_id, 1, "aborted")
+
+    # Attempt 2: failed from BN-adaptation OOM, ledger-only.
+    _append_row(ledger_path, _REAL_ATTEMPT_2_ID, run_id, 2, "failed")
+
+    # Attempt 3: completed mechanically, directory + manifest + ledger row.
+    _complete_attempt_with_manifest(run_id, _REAL_ATTEMPT_3_ID, 3, tmp_path, ledger_path)
+
+    # Amendment: attempt 3 recorded canonical-ineligible for the double-softmax defect.
+    append_evaluation_amendment_entry(
+        evaluation_id=_REAL_ATTEMPT_3_ID,
+        evaluation_attempt=3,
+        historical_status="completed",
+        canonical_eligible=False,
+        reason="probability_metric_double_softmax",
+        validation_metrics_observed=True,
+        test_metrics_observed=False,
+        artifacts_preserved=True,
+        rerun_required=True,
+        predictions_sha256=_REAL_ATTEMPT_3_PREDICTIONS_SHA256,
+        source_commit="b826338322d75f56894b6f50cfb3fbbd957ae4f3",
+        recorded_at="2026-08-19T17:58:59Z",
+        ledger_path=amendments_ledger_path,
+    )
+
+    # Attempt 3 must never be selected for idempotent skip under its own hash.
+    skip_same_hash = check_evaluation_skip(
+        run_id,
+        _REAL_ATTEMPT_3_ID,
+        root=tmp_path,
+        ledger_path=ledger_path,
+        evaluation_amendments_ledger_path=amendments_ledger_path,
+    )
+    assert skip_same_hash is None
+
+    # A corrected config/fingerprint (new evaluation_config_hash, e.g. after the
+    # metric_input_contract freeze) must NOT trigger ConflictingEvaluationImplementationError.
+    corrected_hash = "corrected-metric-contract-hash-attempt-4"
+    skip_corrected = check_evaluation_skip(
+        run_id,
+        corrected_hash,
+        root=tmp_path,
+        ledger_path=ledger_path,
+        evaluation_amendments_ledger_path=amendments_ledger_path,
+    )
+    assert skip_corrected is None
+
+    # Next attempt number is 4, regardless of eligibility.
+    assert next_evaluation_attempt_number(run_id, root=tmp_path, ledger_path=ledger_path) == 4
 
 
 def test_ledger_directory_hash_conflict_hard_fails(tmp_path):
@@ -1973,17 +2084,20 @@ def test_malformed_latency_report_causes_failed_status_never_completed(tmp_path,
 
 
 def test_real_incident_rows_unchanged_attempt_1_aborted_attempt_2_failed():
-    """Two real, permanently-reserved, noncanonical attempts exist for
-    this training run: attempt 1 (Phase 2B.4B/4C test-harness escape,
-    aborted) and attempt 2 (Phase 2B.4D OOM at BN-adaptation N=100,
-    failed). Neither is a completed canonical evaluation; neither blocks
-    the next real attempt."""
+    """Three real, permanently-reserved historical attempts exist for this
+    training run: attempt 1 (Phase 2B.4B/4C test-harness escape, aborted),
+    attempt 2 (Phase 2B.4D OOM at BN-adaptation N=100, failed), and attempt
+    3 (Phase 2B.4D metric-contract defect, completed mechanically but
+    recorded canonical-ineligible via the amendments ledger -- see
+    docs/phase2b_validation_evaluation_metric_contract_incident.md). None
+    of the three is a canonically eligible completed evaluation; none
+    blocks the next real attempt."""
     import csv
 
     with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
         rows = list(csv.DictReader(f))
-    assert len(rows) == 2
-    row1, row2 = rows
+    assert len(rows) == 3
+    row1, row2, row3 = rows
     assert row1["evaluation_id"] == "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5"
     assert row1["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
     assert row1["evaluation_attempt"] == "1"
@@ -1996,15 +2110,27 @@ def test_real_incident_rows_unchanged_attempt_1_aborted_attempt_2_failed():
     assert row2["failure_reason"] == "Invalid buffer size: 9.35 GiB"
     assert row2["test_metrics_observed"] == "False"
 
+    assert row3["evaluation_id"] == "75aa7e37a9fe5454bf8edf6483d676a182d6dde9ff4a3730e4ada7195e09eb9e"
+    assert row3["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
+    assert row3["evaluation_attempt"] == "3"
+    assert row3["status"] == "completed"
+    assert row3["primary_artifact_hash"] == "c9930c594f974f6d4019475cbcb51d4896a1bf27d497628ef42457038d77823a"
+    assert row3["test_metrics_observed"] == "False"
+
     assert {row1["status"], row2["status"]}.isdisjoint({"completed"})
 
+    from when_tta_hurts.ledger import is_evaluation_canonical_ineligible
 
-def test_real_next_evaluation_attempt_number_is_now_3():
-    """Attempts 1 (aborted) and 2 (failed) both permanently reserve their
-    numbers; the next real attempt resolves to 3."""
+    assert is_evaluation_canonical_ineligible(row3["evaluation_id"], 3) is True
+
+
+def test_real_next_evaluation_attempt_number_is_now_4():
+    """Attempts 1 (aborted), 2 (failed), and 3 (completed but canonical-
+    ineligible) all permanently reserve their numbers; the next real
+    attempt resolves to 4."""
     from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
 
-    assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 3
+    assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 4
 
 
 # ---------------------------------------------------------------------------

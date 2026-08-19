@@ -79,6 +79,7 @@ _METADATA_REQUIRED_KEYS = {
     "dataset_expected_checksum_md5",
     "dataset_verification",
     "batching",
+    "metric_input_contract",
     "evaluation_config_hash",
     "split",
     "n_validation_samples",
@@ -247,6 +248,10 @@ def _validate_metadata_schema(metadata: dict) -> None:
         raise EvaluationSchemaValidationError(
             f"metadata.json split must be 'validation', got {metadata['split']!r}."
         )
+    if not isinstance(metadata["metric_input_contract"], str) or not metadata["metric_input_contract"]:
+        raise EvaluationSchemaValidationError(
+            "metadata.json metric_input_contract must be a non-empty string."
+        )
     _validate_dataset_verification_schema(metadata)
     _validate_batching_schema(metadata)
 
@@ -393,7 +398,33 @@ def validate_predictions_arrays(predictions: dict[str, np.ndarray]) -> None:
     _validate_probability_array("view_probs", view_probs, n, n_classes)
 
     if "bn_adapted_probs" in predictions:
-        _validate_probability_array("bn_adapted_probs", predictions["bn_adapted_probs"], n, n_classes)
+        bn_adapted_probs = predictions["bn_adapted_probs"]
+        _validate_probability_array("bn_adapted_probs", bn_adapted_probs, n, n_classes)
+        # Phase 2B.4D Metric-Contract Correction, Part F: every registered N
+        # must have persisted probability evidence, not just the max N --
+        # bn_adapted_probs is now stacked [n_prefixes, N, C], with
+        # bn_adapted_prefix_sequence recording which N each leading index
+        # corresponds to (both-or-neither; a stacked array with no ordering
+        # record, or vice versa, is a schema violation).
+        if "bn_adapted_prefix_sequence" not in predictions:
+            raise EvaluationPersistenceError(
+                "predictions has 'bn_adapted_probs' but is missing 'bn_adapted_prefix_sequence' -- "
+                "cannot determine which registered N each stacked entry corresponds to."
+            )
+        bn_prefix_sequence = predictions["bn_adapted_prefix_sequence"]
+        if bn_adapted_probs.ndim != 3:
+            raise EvaluationPersistenceError(
+                f"bn_adapted_probs must be 3-D [n_prefixes, N, C], got shape {bn_adapted_probs.shape}."
+            )
+        if bn_prefix_sequence.shape[0] != bn_adapted_probs.shape[0]:
+            raise EvaluationPersistenceError(
+                f"bn_adapted_prefix_sequence length {bn_prefix_sequence.shape[0]} does not match "
+                f"bn_adapted_probs' leading dimension {bn_adapted_probs.shape[0]}."
+            )
+    elif "bn_adapted_prefix_sequence" in predictions:
+        raise EvaluationPersistenceError(
+            "predictions has 'bn_adapted_prefix_sequence' but no 'bn_adapted_probs' to index."
+        )
 
 
 def build_evaluation_artifact_manifest(
