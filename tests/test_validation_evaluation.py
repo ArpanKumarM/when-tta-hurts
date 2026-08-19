@@ -2084,53 +2084,104 @@ def test_malformed_latency_report_causes_failed_status_never_completed(tmp_path,
 
 
 def test_real_incident_rows_unchanged_attempt_1_aborted_attempt_2_failed():
-    """Three real, permanently-reserved historical attempts exist for this
+    """Four real, permanently-reserved historical attempts exist for this
     training run: attempt 1 (Phase 2B.4B/4C test-harness escape, aborted),
-    attempt 2 (Phase 2B.4D OOM at BN-adaptation N=100, failed), and attempt
-    3 (Phase 2B.4D metric-contract defect, completed mechanically but
+    attempt 2 (Phase 2B.4D OOM at BN-adaptation N=100, failed), attempt 3
+    (Phase 2B.4D metric-contract defect, completed mechanically but
     recorded canonical-ineligible via the amendments ledger -- see
-    docs/phase2b_validation_evaluation_metric_contract_incident.md). None
-    of the three is a canonically eligible completed evaluation; none
-    blocks the next real attempt."""
+    docs/phase2b_validation_evaluation_metric_contract_incident.md), and
+    attempt 4 (Phase 2B.4D Part 2, completed under the corrected
+    probability_native_v1 metric contract and canonically eligible -- see
+    docs/phase2b_validation_evaluation_canary_audit.md).
+
+    This checks that rows 1-4 for THIS run_id retain their exact,
+    immutable historical content -- each row's own field values are
+    permanently fixed facts (Phase 2B.4E). It deliberately does NOT assert
+    the ledger's total row count or that these are the ONLY rows present:
+    the ledger is a live, append-only, growing artifact -- later real
+    confirmatory evaluations (for this run_id, at higher attempt numbers,
+    or for entirely different training run_ids) will add further rows
+    without invalidating anything asserted here. An exact-row-count
+    assertion would make this test spuriously fail on unrelated future
+    progress rather than on an actual regression."""
     import csv
 
+    run_id = "A-pathmnist-28px-batchnorm-policy-none-s0"
     with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
         rows = list(csv.DictReader(f))
-    assert len(rows) == 3
-    row1, row2, row3 = rows
+    by_attempt = {int(r["evaluation_attempt"]): r for r in rows if r["training_run_id"] == run_id}
+    assert {1, 2, 3, 4} <= set(by_attempt)  # historical floor must never shrink
+
+    row1 = by_attempt[1]
     assert row1["evaluation_id"] == "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5"
-    assert row1["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
-    assert row1["evaluation_attempt"] == "1"
     assert row1["status"] == "aborted"
 
+    row2 = by_attempt[2]
     assert row2["evaluation_id"] == "96fbf4705bf93f4e2115fb33b9837df1095c90549d1f86ed1b1c1c160cc7fffe"
-    assert row2["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
-    assert row2["evaluation_attempt"] == "2"
     assert row2["status"] == "failed"
     assert row2["failure_reason"] == "Invalid buffer size: 9.35 GiB"
     assert row2["test_metrics_observed"] == "False"
 
+    row3 = by_attempt[3]
     assert row3["evaluation_id"] == "75aa7e37a9fe5454bf8edf6483d676a182d6dde9ff4a3730e4ada7195e09eb9e"
-    assert row3["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
-    assert row3["evaluation_attempt"] == "3"
     assert row3["status"] == "completed"
     assert row3["primary_artifact_hash"] == "c9930c594f974f6d4019475cbcb51d4896a1bf27d497628ef42457038d77823a"
     assert row3["test_metrics_observed"] == "False"
+
+    row4 = by_attempt[4]
+    assert row4["evaluation_id"] == "e59debe937108abf956f9340621f306e5af190ae445dd189bb2572361fa0a2f4"
+    assert row4["status"] == "completed"
+    assert row4["primary_artifact_hash"] == "48b6ff9cf6900853043426ed3381537a84dba29b944670302229008ee1e3ba07"
+    assert row4["test_metrics_observed"] == "False"
 
     assert {row1["status"], row2["status"]}.isdisjoint({"completed"})
 
     from when_tta_hurts.ledger import is_evaluation_canonical_ineligible
 
     assert is_evaluation_canonical_ineligible(row3["evaluation_id"], 3) is True
+    assert is_evaluation_canonical_ineligible(row4["evaluation_id"], 4) is False
 
 
-def test_real_next_evaluation_attempt_number_is_now_4():
-    """Attempts 1 (aborted), 2 (failed), and 3 (completed but canonical-
-    ineligible) all permanently reserve their numbers; the next real
-    attempt resolves to 4."""
+def test_real_next_evaluation_attempt_number_is_monotonic_and_gapless():
+    """next_evaluation_attempt_number() must always equal
+    max(existing attempt numbers for this run_id) + 1. Checked against
+    whatever the real ledger's CURRENT state is (read dynamically) rather
+    than a hardcoded number, so this test remains valid as later real
+    confirmatory evaluations are appended for this cell -- a hardcoded
+    "next == 5"-style assertion goes stale the moment attempt 5 genuinely
+    runs, which is exactly what happened to this test's two predecessors
+    (originally asserting 4, then 5) as attempts 3 and 4 each completed in
+    turn. The invariant under test -- monotonic, gapless attempt
+    allocation with a permanently-reserved historical floor -- is the
+    actual scientific/provenance contract; the specific next-number value
+    is not."""
+    import csv
+
     from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
 
-    assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 4
+    run_id = "A-pathmnist-28px-batchnorm-policy-none-s0"
+    with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    attempt_numbers = {int(r["evaluation_attempt"]) for r in rows if r["training_run_id"] == run_id}
+    assert {1, 2, 3, 4} <= attempt_numbers  # historical floor must never shrink
+
+    expected_next = max(attempt_numbers) + 1
+    assert next_evaluation_attempt_number(run_id) == expected_next
+
+
+def test_real_attempt_4_is_sole_canonical_completion():
+    """check_evaluation_skip() under attempt 4's real evaluation_config_hash
+    resolves to attempt 4 without raising AmbiguousEvaluationCompletionError
+    or ConflictingEvaluationImplementationError -- attempt 3's amendment
+    keeps it out of both the matching-completed and conflicting-completed
+    buckets."""
+    skip = check_evaluation_skip(
+        "A-pathmnist-28px-batchnorm-policy-none-s0",
+        "e59debe937108abf956f9340621f306e5af190ae445dd189bb2572361fa0a2f4",
+    )
+    assert skip is not None
+    assert skip["attempt_number"] == 4
+    assert skip["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
