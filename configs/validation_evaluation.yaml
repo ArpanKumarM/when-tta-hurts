@@ -55,3 +55,15 @@ policy_reference:
   module: "when_tta_hurts.transforms.policies"
   function: "build_policy"
   frozen_parameter_table: "docs/experimental_protocol.md#frozen-augmentation-parameters"
+
+# --- Bounded-memory batching (Phase 2B.4D OOM correction) -----------------
+# See docs/phase2b_validation_evaluation_batching_freeze.md for the full
+# memory audit, the BN-adaptation equivalence analysis (single-batch vs.
+# sequential microbatch are NOT mathematically equivalent -- disclosed,
+# not hidden), and the protocol-underspecification finding that
+# authorizes this operationalization. Frozen BEFORE any completed
+# confirmatory evaluation exists.
+inference_batch_size: 256  # clean inference, every TTA view, BN-adapted prediction, latency measurement
+bn_adaptation_batch_size: 256
+bn_adaptation_algorithm: sequential_microbatch_v1
+bn_adaptation_enumeration_order: view_major_then_sample_major  # view index ascending, then sample index ascending within each view
