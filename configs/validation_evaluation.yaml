@@ -67,3 +67,13 @@ inference_batch_size: 256  # clean inference, every TTA view, BN-adapted predict
 bn_adaptation_batch_size: 256
 bn_adaptation_algorithm: sequential_microbatch_v1
 bn_adaptation_enumeration_order: view_major_then_sample_major  # view index ascending, then sample index ascending within each view
+
+# --- Metric-input contract (Phase 2B.4D Metric-Contract Correction) -------
+# See docs/phase2b_validation_evaluation_metric_contract_freeze.md for the
+# full mechanical adjudication, hand-calculated proof, and defect
+# quantification this freezes the fix for. Softmax is applied EXACTLY ONCE
+# between any raw model logits and any final metric value -- never to an
+# already-normalized probability distribution. Frozen after evaluation
+# attempt 3 was found, audited, and recorded canonical-ineligible for
+# violating this contract (docs/phase2b_validation_evaluation_metric_contract_incident.md).
+metric_input_contract: probability_native_v1
