@@ -38,6 +38,7 @@ from when_tta_hurts.transforms.policies import build_policy
 from when_tta_hurts.validation_evaluation import (
     EVALUATOR_FINGERPRINT_MANIFEST,
     AmbiguousEvaluationCompletionError,
+    ConflictingEvaluationImplementationError,
     EvaluatorFingerprintError,
     FrozenTTASeedConfigError,
     ValidationEvaluationConfig,
@@ -585,7 +586,11 @@ def test_idempotent_skip_before_any_factory(tmp_path, monkeypatch):
     assert skip["attempt_number"] == 1
 
 
-def test_skip_returns_none_for_different_config_hash(tmp_path):
+def test_skip_hard_fails_for_completed_attempt_under_different_config_hash(tmp_path):
+    """Phase 2B.4D-Engineering Addendum: an existing COMPLETED attempt
+    under a different evaluation_config_hash is a conflicting canonical
+    result, not a simple cache miss -- must hard-fail, never return None
+    (which would let a new attempt silently proceed)."""
     from when_tta_hurts.ledger import append_evaluation_entry
 
     run_id = "fake-run-2"
@@ -606,8 +611,8 @@ def test_skip_returns_none_for_different_config_hash(tmp_path):
         runtime_seconds=1.0,
         ledger_path=ledger_path,
     )
-    skip = check_evaluation_skip(run_id, "hashB", root=tmp_path, ledger_path=ledger_path)
-    assert skip is None
+    with pytest.raises(ConflictingEvaluationImplementationError):
+        check_evaluation_skip(run_id, "hashB", root=tmp_path, ledger_path=ledger_path)
 
 
 def test_stale_nonterminal_attempt_raises(tmp_path):
@@ -1934,3 +1939,364 @@ def test_real_next_evaluation_attempt_number_is_still_2():
     from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
 
     assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering Addendum: mechanical transitive-closure audit
+# ---------------------------------------------------------------------------
+
+# Every module reachable from validation_evaluation.py's local imports that
+# is NOT in EVALUATOR_FINGERPRINT_MANIFEST must appear here, with a reason
+# -- see docs/phase2b_validation_evaluation_engineering_addendum.md sec.3.2
+# for the full rationale behind each entry.
+_SAFELY_EXCLUDED_FROM_FINGERPRINT = {
+    "when_tta_hurts": "trivial package __init__, no computation",
+    "when_tta_hurts.evaluation": "thin re-export shim; imports tta/cache as inert side effects only",
+    "when_tta_hurts.evaluation.tta": "pilot-era legacy module, never called by the confirmatory path",
+    "when_tta_hurts.evaluation.cache": "pilot-era legacy module, never called by the confirmatory path",
+    "when_tta_hurts.ledger": "selection-only; effect captured via checkpoint_hash/training_attempt",
+    "when_tta_hurts.run_identity": "path resolution only; output hash-verified before use",
+    "when_tta_hurts.block_d_benchmark": "selection-only; effect captured downstream",
+    "when_tta_hurts.block_d_gate": "selection-only; effect captured downstream",
+    "when_tta_hurts.authorization": "final-test-evaluation gate only; unreachable from validation-only path",
+    "when_tta_hurts.dataset_verification": "training-loader-path only; evaluation uses data.py directly",
+    "when_tta_hurts.reproducibility": "training-time seeding only; never called during evaluation",
+    "when_tta_hurts.result_artifacts": "training-attempt persistence only (evaluation has its own module)",
+    "when_tta_hurts.training": "the training loop itself; never called during evaluation",
+}
+
+
+def _resolve_module_path(mod, pkg_root):
+    pkg = "when_tta_hurts"
+    if mod == pkg:
+        return pkg_root / "__init__.py"
+    if not (mod == pkg or mod.startswith(pkg + ".")):
+        return None
+    rel = mod[len(pkg) + 1 :].replace(".", "/")
+    for candidate in (pkg_root / f"{rel}.py", pkg_root / rel / "__init__.py"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _local_imports_of(path):
+    import ast
+
+    pkg = "when_tta_hurts"
+    tree = ast.parse(path.read_text())
+    mods = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and (node.module == pkg or node.module.startswith(pkg + "."))
+        ):
+            mods.add(node.module)
+            for alias in node.names:
+                mods.add(f"{node.module}.{alias.name}")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == pkg or alias.name.startswith(pkg + "."):
+                    mods.add(alias.name)
+    return mods
+
+
+def _compute_transitive_closure(entry_modules, pkg_root):
+    seen = {}
+    frontier = list(entry_modules)
+    while frontier:
+        mod = frontier.pop()
+        if mod in seen:
+            continue
+        path = _resolve_module_path(mod, pkg_root)
+        if path is None:
+            continue  # candidate string wasn't actually a resolvable module
+        seen[mod] = path
+        for dep in _local_imports_of(path):
+            if dep not in seen:
+                frontier.append(dep)
+    return seen
+
+
+def test_fingerprint_manifest_covers_the_full_transitive_closure():
+    """Structural audit (Phase 2B.4D-Engineering Addendum): every module
+    reachable, via local imports, from both validation_evaluation.py AND
+    the CLI script (scripts/run_validation_evaluation.py) must be either
+    in EVALUATOR_FINGERPRINT_MANIFEST or in the narrow, documented
+    exclusion allowlist above -- no silent gaps."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    pkg_root = repo_root / "src" / "when_tta_hurts"
+
+    cli_script_imports = _local_imports_of(repo_root / "scripts" / "run_validation_evaluation.py")
+    closure = _compute_transitive_closure(
+        {"when_tta_hurts.validation_evaluation", *cli_script_imports}, pkg_root
+    )
+
+    manifest_paths = {(repo_root / p).resolve() for p in EVALUATOR_FINGERPRINT_MANIFEST}
+    unaccounted = []
+    for mod, path in closure.items():
+        if path.resolve() in manifest_paths:
+            continue
+        if mod in _SAFELY_EXCLUDED_FROM_FINGERPRINT:
+            continue
+        unaccounted.append(mod)
+    assert unaccounted == [], f"unaccounted-for modules in the evaluation call graph: {sorted(unaccounted)}"
+
+
+def test_transitive_closure_helper_actually_finds_the_known_gaps():
+    """Sanity check on the closure helper itself: it must at least discover
+    the specific modules the Addendum found missing, proving the helper is
+    not vacuously trivial (e.g. failing to resolve any imports at all)."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    pkg_root = repo_root / "src" / "when_tta_hurts"
+    closure = _compute_transitive_closure({"when_tta_hurts.validation_evaluation"}, pkg_root)
+    for expected in (
+        "when_tta_hurts.models.resnet",
+        "when_tta_hurts.orchestrator",
+        "when_tta_hurts.matrix",
+        "when_tta_hurts.data",
+        "when_tta_hurts.devices",
+        "when_tta_hurts.config",
+        "when_tta_hurts.ledger",
+    ):
+        assert expected in closure, f"closure helper failed to discover {expected}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering Addendum: per-category fingerprint-change proofs
+# ---------------------------------------------------------------------------
+
+
+def _fingerprint_with_real_files_copied(tmp_path):
+    """Copies every REAL, production EVALUATOR_FINGERPRINT_MANIFEST file
+    into tmp_path, preserving relative paths -- so a single file can be
+    perturbed and re-fingerprinted without ever touching the real repo."""
+    import shutil
+    from pathlib import Path
+
+    real_root = Path(__file__).resolve().parent.parent
+    for rel in EVALUATOR_FINGERPRINT_MANIFEST:
+        src = real_root / rel
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, dst)
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    "category,rel_path",
+    [
+        ("SmallCNN implementation", "src/when_tta_hurts/models/small_cnn.py"),
+        ("ResNet-18 implementation", "src/when_tta_hurts/models/resnet.py"),
+        ("model-building/selection logic", "src/when_tta_hurts/orchestrator.py"),
+        ("data/preprocessing logic", "src/when_tta_hurts/data.py"),
+        ("augmentation/view logic", "src/when_tta_hurts/evaluation/views.py"),
+        ("metric/aggregation logic", "src/when_tta_hurts/evaluation/aggregation.py"),
+        ("latency logic", "src/when_tta_hurts/evaluation/latency.py"),
+        ("persistence schema", "src/when_tta_hurts/evaluation_result_artifacts.py"),
+        ("frozen evaluation configuration", "configs/validation_evaluation.yaml"),
+        ("runtime-dependency identity", "uv.lock"),
+    ],
+)
+def test_fingerprint_changes_for_each_major_category(tmp_path, category, rel_path):
+    repo_copy = _fingerprint_with_real_files_copied(tmp_path)
+    baseline_fp, _ = compute_evaluator_fingerprint(repo_root=repo_copy)
+
+    target = repo_copy / rel_path
+    target.write_bytes(target.read_bytes() + b"\n# perturbed for test\n")
+
+    perturbed_fp, _ = compute_evaluator_fingerprint(repo_root=repo_copy)
+    assert baseline_fp != perturbed_fp, f"fingerprint did not change when {category} ({rel_path}) changed"
+
+
+def test_fingerprint_unaffected_by_a_ledger_or_doc_only_change(tmp_path):
+    """A ledger/audit-document commit must not alter the fingerprint --
+    proven by adding a docs/ and an artifacts/ledger*.csv file (neither in
+    the manifest) alongside the real manifested files and confirming the
+    fingerprint is identical."""
+    repo_copy = _fingerprint_with_real_files_copied(tmp_path)
+    baseline_fp, _ = compute_evaluator_fingerprint(repo_root=repo_copy)
+
+    (repo_copy / "docs").mkdir(exist_ok=True)
+    (repo_copy / "docs" / "some_audit_note.md").write_text("an audit note\n")
+    (repo_copy / "artifacts").mkdir(exist_ok=True)
+    (repo_copy / "artifacts" / "ledger_validation_evaluation.csv").write_text("a,b\n1,2\n")
+
+    after_fp, _ = compute_evaluator_fingerprint(repo_root=repo_copy)
+    assert baseline_fp == after_fp
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.4D-Engineering Addendum: incompatible-completion hard failure
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_completion_triggers_on_checkpoint_hash_difference_too(tmp_path):
+    """Table row: different checkpoint hash -> conflicting training source
+    -> hard failure. Mechanically the same evaluation_config_hash-mismatch
+    path as fingerprint/config differences (checkpoint_hash is one of the
+    inputs hashed into evaluation_config_hash), verified explicitly here."""
+    from when_tta_hurts.artifacts import atomic_write_json
+    from when_tta_hurts.evaluation_result_artifacts import build_evaluation_artifact_manifest
+    from when_tta_hurts.ledger import append_evaluation_entry
+
+    run_id = "checkpoint-conflict-run"
+    ledger_path = tmp_path / "ledger.csv"
+    attempt_dir, status = start_evaluation_attempt(
+        run_id, "hash-old-checkpoint", root=tmp_path, ledger_path=ledger_path
+    )
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    (attempt_dir / "predictions.npz").write_bytes(b"x")
+    (attempt_dir / "metrics.json").write_text("{}")
+    (attempt_dir / "metadata.json").write_text("{}")
+    (attempt_dir / "view_manifest.json").write_text("{}")
+    manifest = build_evaluation_artifact_manifest(attempt_dir)
+    atomic_write_json(manifest, attempt_dir / "artifact_manifest.json")
+    append_evaluation_entry(
+        evaluation_id="hash-old-checkpoint",
+        training_run_id=run_id,
+        training_attempt=1,
+        checkpoint_hash="old-ckpt",
+        evaluation_config_hash="hash-old-checkpoint",
+        evaluation_attempt=status.attempt_number,
+        status="completed",
+        primary_artifact_hash="art",
+        started_at=status.started_at,
+        ended_at=status.ended_at,
+        runtime_seconds=1.0,
+        ledger_path=ledger_path,
+    )
+    with pytest.raises(ConflictingEvaluationImplementationError):
+        check_evaluation_skip(run_id, "hash-new-checkpoint", root=tmp_path, ledger_path=ledger_path)
+
+
+def test_conflicting_completion_hard_fails_before_attempt_allocation_and_heavy_dependencies(
+    tmp_path, monkeypatch
+):
+    import when_tta_hurts.validation_evaluation as ve
+    from when_tta_hurts.ledger import append_evaluation_entry
+
+    def fake_resolve(run_id, matrix_path):
+        cell = type(
+            "FakeCell",
+            (),
+            {
+                "run_id": lambda self: run_id,
+                "dataset": "pathmnist",
+                "resolution": 28,
+                "block": "A_core_normalization_resolution",
+                "model": "small_cnn",
+                "normalization": "batchnorm",
+                "training_policy": "none",
+                "seed": 0,
+            },
+        )()
+        result = type(
+            "R", (), {"attempt_number": 3, "checkpoint_hash": "ckpt-fixed", "status": "completed"}
+        )()
+        return cell, result
+
+    monkeypatch.setattr(ve, "resolve_canonical_training_completion", fake_resolve)
+    monkeypatch.setattr(
+        ve, "parse_and_validate_matrix", lambda *a, **k: type("E", (), {"source_config_hash": "matrixhash"})()
+    )
+
+    seed_cfg_path = tmp_path / "validation_evaluation.yaml"
+    seed_cfg_path.write_text(_VALID_YAML_TEXT)
+    root = tmp_path / "eval_root"
+    ledger_path = tmp_path / "ledger.csv"
+
+    # Pre-seed a COMPLETED attempt for this run under a STALE/incompatible
+    # hash (simulating a prior canonical completion under different
+    # evaluator code/config/checkpoint).
+    attempt_dir, status = start_evaluation_attempt(
+        "fake-run", "stale-hash", root=root, ledger_path=ledger_path
+    )
+    predictions = {
+        "labels": np.array([0, 1, 2]),
+        "sample_indices": np.array([0, 1, 2]),
+        "clean_probs": np.full((3, 3), 1 / 3, dtype=np.float32),
+        "view_probs": np.full((100, 3, 3), 1 / 3, dtype=np.float32),
+    }
+    metadata = _valid_metadata()
+    metadata.update(
+        evaluation_id="stale-hash",
+        training_run_id="fake-run",
+        checkpoint_hash="ckpt-fixed",
+        evaluation_config_hash="stale-hash",
+        n_validation_samples=3,
+    )
+    metrics = {
+        "training_run_id": "fake-run",
+        "evaluation_config_hash": "stale-hash",
+        "clean": {"accuracy": 1 / 3},
+        "conditions": {},
+        "latency": _valid_latency(n_samples=3),
+    }
+    persist_and_verify_evaluation_completion(
+        attempt_dir,
+        predictions=predictions,
+        metrics=metrics,
+        metadata=metadata,
+        view_manifest=_valid_view_manifest(),
+        prefix_sequence=_VALID_PREFIX_SEQUENCE,
+    )
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.COMPLETED)
+    append_evaluation_entry(
+        evaluation_id="stale-hash",
+        training_run_id="fake-run",
+        training_attempt=3,
+        checkpoint_hash="ckpt-fixed",
+        evaluation_config_hash="stale-hash",
+        evaluation_attempt=status.attempt_number,
+        status="completed",
+        primary_artifact_hash="art",
+        started_at=status.started_at,
+        ended_at=status.ended_at,
+        runtime_seconds=1.0,
+        ledger_path=ledger_path,
+    )
+
+    def _explode(*a, **k):
+        raise AssertionError("heavy dependency reached -- conflict check failed to hard-fail first")
+
+    ledger_content_before = ledger_path.read_text()
+    entries_before = set(root.rglob("*"))
+
+    with pytest.raises(ConflictingEvaluationImplementationError):
+        ve.run_validation_evaluation(
+            "fake-run",
+            device_resolver=_explode,
+            root=root,
+            evaluation_ledger_path=ledger_path,
+            tta_seed_config_path=seed_cfg_path,
+            tta_seed_git_tracked_and_clean=_always_tracked_clean,
+            tta_seed_last_commit_for_path=_commit_for("c" * 40),
+            tta_seed_commit_is_ancestor=_all_ancestors,
+        )
+
+    # No new ledger row and no new attempt directory were created -- the
+    # hard failure happened strictly before attempt allocation/ledger
+    # append, and device_resolver (the first heavy dependency reached in
+    # the production order) was never called.
+    assert ledger_path.read_text() == ledger_content_before
+    assert set(root.rglob("*")) == entries_before
+
+
+def test_only_aborted_attempts_still_permit_the_next_numbered_attempt(tmp_path):
+    """Table row: only failed/aborted attempts exist -> no canonical
+    completion -> next numbered attempt may proceed. Distinguishes this
+    from the completed-conflict case above -- confirms the new hard-fail
+    behavior did not also start blocking the legitimate retry path."""
+    run_id = "aborted-only-run"
+    ledger_path = tmp_path / "ledger.csv"
+    attempt_dir, status = start_evaluation_attempt(run_id, "hash1", root=tmp_path, ledger_path=ledger_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.ABORTED, failure_reason="killed")
+    _append_row(ledger_path, "hash1", run_id, status.attempt_number, "aborted")
+
+    skip = check_evaluation_skip(run_id, "hash2", root=tmp_path, ledger_path=ledger_path)
+    assert skip is None

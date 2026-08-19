@@ -106,19 +106,45 @@ DEFAULT_EVALUATION_ROOT = Path("artifacts/validation_evaluation")
 # fingerprint of these files (never the literal current git HEAD) is what
 # makes evaluation_id stable across ledger/doc-only commits while still
 # failing closed on a real evaluation-relevant code/config change.
+# Corrected in Phase 2B.4D-Engineering Addendum
+# (docs/phase2b_validation_evaluation_engineering_addendum.md) after a
+# mechanical transitive-closure audit found this manifest was missing:
+# models/resnet.py (Block C/D use ResNet-18, not just SmallCNN),
+# orchestrator.py (_build_model() -- model-architecture dispatch --
+# lives here; included as a whole file, a deliberately conservative
+# choice per the addendum's "false invalidation is preferable to silent
+# reuse" principle, even though it also contains unrelated clean-tree/
+# selection logic whose OWN effect is already captured via checkpoint_
+# hash/training_attempt), matrix.py (cell-expansion logic that resolves
+# model/dataset/resolution/normalization per cell -- NOT fully captured
+# by matrix_hash, which only hashes the pre-expansion raw YAML), data.py
+# (dataset loading/preprocessing/class-count resolution), devices.py
+# (MPS/CPU device resolution -- affects which physical device executes
+# forward passes), config.py (the config_hash() algorithm itself -- the
+# earlier "self-referential" exclusion rationale did not hold up:
+# fingerprinting a file's raw bytes via hash_file() has no circularity),
+# and pyproject.toml/uv.lock (exact runtime dependency versions).
 EVALUATOR_FINGERPRINT_MANIFEST: tuple[str, ...] = (
     "configs/validation_evaluation.yaml",
+    "pyproject.toml",
     "src/when_tta_hurts/artifacts.py",
+    "src/when_tta_hurts/config.py",
+    "src/when_tta_hurts/data.py",
+    "src/when_tta_hurts/devices.py",
     "src/when_tta_hurts/evaluation/aggregation.py",
     "src/when_tta_hurts/evaluation/bn_adaptation.py",
     "src/when_tta_hurts/evaluation/latency.py",
     "src/when_tta_hurts/evaluation/validation_loader.py",
     "src/when_tta_hurts/evaluation/views.py",
     "src/when_tta_hurts/evaluation_result_artifacts.py",
+    "src/when_tta_hurts/matrix.py",
     "src/when_tta_hurts/metrics.py",
+    "src/when_tta_hurts/models/resnet.py",
     "src/when_tta_hurts/models/small_cnn.py",
+    "src/when_tta_hurts/orchestrator.py",
     "src/when_tta_hurts/transforms/policies.py",
     "src/when_tta_hurts/validation_evaluation.py",
+    "uv.lock",
 )
 
 
@@ -365,6 +391,22 @@ class AmbiguousEvaluationCompletionError(RuntimeError):
     eligibility-filtering step), so this is never silently resolved by
     earliest/latest recency -- it always requires explicit human
     reconciliation."""
+
+
+class ConflictingEvaluationImplementationError(RuntimeError):
+    """Raised when a training_run_id already has a COMPLETED evaluation
+    attempt recorded under a DIFFERENT evaluation_config_hash than the
+    current request -- i.e. the evaluator-implementation fingerprint, the
+    frozen evaluation configuration, or the resolved checkpoint identity
+    changed underneath an existing canonical completion (Phase
+    2B.4D-Engineering Addendum). Mirrors
+    orchestrator.ConflictingCompletedRunError's discipline on the training
+    side exactly: a completed result under one implementation must never
+    silently permit a second, different-identity "canonical" completion
+    for the same training run -- this is always a hard failure requiring
+    explicit reconciliation, never a silent "proceed with a new attempt."
+    An aborted/failed attempt never triggers this -- only a COMPLETED one
+    counts as an existing canonical result."""
 
 
 _TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "aborted"})
@@ -647,11 +689,18 @@ def check_evaluation_skip(
          path; its absence indicates a crash between finish and append
          that needs explicit reconciliation, not a silent retry).
     3. Among completed attempts (directory-backed only, by construction
-       of check 2 above), the FIRST with a matching evaluation_config_hash
-       and a verified artifact_manifest.json is returned as the skip
-       target; a completed attempt with a DIFFERENT hash is a hard
-       failure (the evaluation config changed underneath an existing
-       result).
+       of check 2 above): if more than one matches evaluation_config_hash
+       (verified artifact_manifest.json each), raise
+       AmbiguousEvaluationCompletionError; if exactly one matches, return
+       it as the skip target. If NONE matches but at least one completed
+       attempt exists under a DIFFERENT evaluation_config_hash, raise
+       ConflictingEvaluationImplementationError -- a completed evaluation
+       under one implementation/config/checkpoint identity must never
+       silently permit a second, different-identity "canonical"
+       completion for the same training_run_id (Phase 2B.4D-Engineering
+       Addendum). Only if there is truly no completed attempt at all
+       (only failed/aborted, or none) does this return None, permitting a
+       new numbered attempt to proceed.
     """
     from when_tta_hurts import ledger as ledger_module
     from when_tta_hurts.evaluation_result_artifacts import verify_evaluation_artifact_manifest
@@ -698,11 +747,17 @@ def check_evaluation_skip(
                 )
 
     matching_completed = []
+    conflicting_completed = []
     for status in all_attempts:
         if status.get("status") != EvaluationRunStatus.COMPLETED.value:
             continue
         if status["evaluation_config_hash"] != evaluation_config_hash:
-            continue  # a different config's completed attempt is irrelevant to this request
+            # NOT "irrelevant" -- an existing completed evaluation under a
+            # DIFFERENT hash (evaluator fingerprint, frozen config, or
+            # checkpoint identity changed) is a conflicting canonical
+            # result, checked below. Never silently treated as unrelated.
+            conflicting_completed.append(status)
+            continue
         attempt_dir = run_dir / f"attempt_{status['attempt_number']:03d}"
         manifest_path = attempt_dir / "artifact_manifest.json"
         if not manifest_path.exists():
@@ -724,6 +779,19 @@ def check_evaluation_skip(
         )
     if matching_completed:
         return matching_completed[0]
+
+    if conflicting_completed:
+        attempt_numbers = sorted(s["attempt_number"] for s in conflicting_completed)
+        conflicting_hashes = sorted({s["evaluation_config_hash"] for s in conflicting_completed})
+        raise ConflictingEvaluationImplementationError(
+            f"{training_run_id} already has a COMPLETED evaluation (attempt(s) {attempt_numbers}, "
+            f"evaluation_config_hash(es) {conflicting_hashes}) that does NOT match the current "
+            f"request's evaluation_config_hash={evaluation_config_hash}. This means the evaluator-"
+            f"implementation fingerprint, the frozen evaluation configuration, or the resolved "
+            f"checkpoint identity changed underneath an existing canonical result. Hard failure -- "
+            f"will not silently create a second, different-identity canonical completion for the "
+            f"same training run. Requires explicit reconciliation before proceeding."
+        )
     return None
 
 
