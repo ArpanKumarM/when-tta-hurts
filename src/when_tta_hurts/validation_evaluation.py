@@ -41,6 +41,7 @@ import torch
 from when_tta_hurts.artifacts import atomic_write_json, hash_file
 from when_tta_hurts.block_d_benchmark import _sha256_file
 from when_tta_hurts.config import config_hash
+from when_tta_hurts.dataset_verification import expected_official_checksum, verify_official_dataset_artifact
 from when_tta_hurts.evaluation.aggregation import (
     confidence_weighted_average,
     majority_vote,
@@ -89,6 +90,13 @@ PRIMARY_N = 50
 PRIMARY_AGGREGATION = "mean_probability"
 POLICY_IDENTIFIER = "mixed"
 AGGREGATORS: tuple[str, ...] = ("mean_probability", "majority_vote", "confidence_weighted_average")
+
+# Phase 2B.4D Data-Integrity Addendum: identifies which verification
+# function/version produced a persisted dataset_verification section, so
+# a future change to the verification procedure is distinguishable from
+# today's in persisted metadata.
+DATASET_VERIFICATION_METHOD = "dataset_verification.verify_official_dataset_artifact"
+DATASET_VERIFICATION_VERSION = 1
 SECONDARY_ANALYSES: tuple[str, ...] = (
     "scaling_curve",
     "augmentation_ablation",
@@ -124,12 +132,20 @@ DEFAULT_EVALUATION_ROOT = Path("artifacts/validation_evaluation")
 # earlier "self-referential" exclusion rationale did not hold up:
 # fingerprinting a file's raw bytes via hash_file() has no circularity),
 # and pyproject.toml/uv.lock (exact runtime dependency versions).
+#
+# Further corrected in the Phase 2B.4D Data-Integrity Addendum
+# (docs/phase2b_validation_evaluation_data_integrity_addendum.md): adds
+# dataset_verification.py, now reachable from the evaluation path itself
+# (see verify_official_dataset_artifact()/expected_official_checksum()
+# below) -- previously only reachable from the training loader path and
+# therefore safely excluded; that exclusion no longer holds.
 EVALUATOR_FINGERPRINT_MANIFEST: tuple[str, ...] = (
     "configs/validation_evaluation.yaml",
     "pyproject.toml",
     "src/when_tta_hurts/artifacts.py",
     "src/when_tta_hurts/config.py",
     "src/when_tta_hurts/data.py",
+    "src/when_tta_hurts/dataset_verification.py",
     "src/when_tta_hurts/devices.py",
     "src/when_tta_hurts/evaluation/aggregation.py",
     "src/when_tta_hurts/evaluation/bn_adaptation.py",
@@ -605,6 +621,7 @@ class ValidationEvaluationConfig:
     protocol_commit: str
     matrix_hash: str
     evaluator_fingerprint: str
+    dataset_expected_checksum_md5: str
     tta_seed_config_sha256: str
     tta_seed_freeze_commit: str
     tta_seed_derivation_sha256: str
@@ -633,6 +650,7 @@ def build_validation_evaluation_config(
     tta_seed_config: FrozenTTASeedConfig,
     matrix_hash: str,
     evaluator_fingerprint: str,
+    dataset_expected_checksum_md5: str,
 ) -> ValidationEvaluationConfig:
     return ValidationEvaluationConfig(
         training_run_id=cell.run_id(),
@@ -647,6 +665,7 @@ def build_validation_evaluation_config(
         protocol_commit=FROZEN_PROTOCOL_COMMIT,
         matrix_hash=matrix_hash,
         evaluator_fingerprint=evaluator_fingerprint,
+        dataset_expected_checksum_md5=dataset_expected_checksum_md5,
         tta_seed_config_sha256=tta_seed_config.config_file_sha256,
         tta_seed_freeze_commit=tta_seed_config.freeze_commit,
         tta_seed_derivation_sha256=tta_seed_config.derivation_sha256,
@@ -1158,14 +1177,23 @@ def run_validation_evaluation(
     select_device('mps') -- now INSIDE the try block, so a device failure
     is recorded as a terminal "failed" attempt with a ledger row, never
     left as a dangling unledgered "running" status); (8) load + verify the
-    canonical checkpoint read-only; (9) load the validation split ONLY;
-    (10) compute clean + per-view probabilities and every frozen
-    condition/aggregator/prefix metric, THEN measure clean/TTA inference
-    latency (compute_evaluation_latency_report() -- descriptive only,
-    never influences (10)'s already-computed results); (11) persist +
-    independently verify artifacts, including the required latency
-    section (a malformed/incomplete/non-finite latency report fails this
-    step, never producing status="completed"); (12) append the terminal
+    canonical checkpoint read-only; (9) verify the official dataset
+    artifact's checksum (verify_official_dataset_artifact() -- dataset
+    identity, native resolution, expected medmnist.INFO MD5, actual
+    full-file MD5, exact equality, resized=False; fails closed on a
+    missing/mismatched/resized/unsupported artifact, BEFORE any array is
+    loaded -- no download fallback of any kind; see
+    docs/phase2b_validation_evaluation_data_integrity_addendum.md);
+    (10) load the validation split ONLY; (11) compute clean + per-view
+    probabilities and every frozen condition/aggregator/prefix metric,
+    THEN measure clean/TTA inference latency
+    (compute_evaluation_latency_report() -- descriptive only, never
+    influences (11)'s already-computed results); (12) persist +
+    independently verify artifacts, including the required latency and
+    dataset-verification sections (a malformed/incomplete/non-finite
+    latency report, or missing/mismatched/resized dataset-verification
+    evidence, fails this step, never producing status="completed");
+    (13) append the terminal
     evaluation-ledger row.
 
     The `tta_seed_config_*` injectable parameters exist ONLY for synthetic
@@ -1207,8 +1235,19 @@ def run_validation_evaluation(
     evaluator_fingerprint, evaluator_fingerprint_manifest = compute_evaluator_fingerprint(
         repo_root=evaluator_fingerprint_repo_root
     )
+    # Metadata-only lookup (no disk I/O against the artifact itself) -- safe
+    # to call before any attempt exists, binds the STABLE identity to the
+    # official expected checksum without requiring the dataset to be
+    # present locally yet. The full, file-touching verification happens
+    # later, inside the try block, immediately before array loading.
+    dataset_expected_checksum = expected_official_checksum(cell.dataset, cell.resolution)
     cfg = build_validation_evaluation_config(
-        cell, training_result, seed_cfg, expanded.source_config_hash, evaluator_fingerprint
+        cell,
+        training_result,
+        seed_cfg,
+        expanded.source_config_hash,
+        evaluator_fingerprint,
+        dataset_expected_checksum,
     )
     evaluation_id = compute_evaluation_id(cfg)
     source_commit = _git_commit_hash()  # execution provenance only -- NOT hashed into evaluation_id
@@ -1236,6 +1275,21 @@ def run_validation_evaluation(
     try:
         device = device_resolver()
         model = load_and_verify_canonical_checkpoint(cell, training_result, training_root)
+        dataset_verification = verify_official_dataset_artifact(cell.dataset, cell.resolution, root=data_root)
+        if dataset_verification.expected_checksum_md5 != dataset_expected_checksum:
+            # Defensive consistency check: both the identity-time lookup
+            # above and this full verification call resolve the expected
+            # checksum through the exact same expected_official_checksum()
+            # source of truth, so this should never actually diverge
+            # within one process -- fail loudly rather than silently if it
+            # somehow ever did.
+            raise EvaluationPersistenceError(
+                f"Expected checksum resolved at identity-computation time "
+                f"({dataset_expected_checksum}) does not match the expected checksum resolved at "
+                f"verification time ({dataset_verification.expected_checksum_md5}) for "
+                f"{cell.dataset}/{cell.resolution}px -- refusing to proceed with an inconsistent "
+                f"identity binding."
+            )
         split = load_validation_evaluation_split(cell.dataset, cell.resolution, data_root)
         outcome = compute_validation_evaluation(model, split, resolved_tta_seed, device)
         latency_report = compute_evaluation_latency_report(model, split, resolved_tta_seed, device)
@@ -1268,6 +1322,22 @@ def run_validation_evaluation(
             "source_commit": source_commit,
             "evaluator_fingerprint": evaluator_fingerprint,
             "evaluator_fingerprint_manifest": evaluator_fingerprint_manifest,
+            "dataset_expected_checksum_md5": dataset_expected_checksum,
+            "dataset_verification": {
+                "dataset": dataset_verification.dataset,
+                "resolution": dataset_verification.native_resolution,
+                "expected_checksum_md5": dataset_verification.expected_checksum_md5,
+                "actual_checksum_md5": dataset_verification.actual_checksum_md5,
+                "checksum_verified": dataset_verification.checksum_verified,
+                "resized": dataset_verification.resized,
+                "verification_method": DATASET_VERIFICATION_METHOD,
+                "verification_version": DATASET_VERIFICATION_VERSION,
+                # Provenance only -- the absolute local path never
+                # participates in scientific identity (not hashed into
+                # evaluation_id; see dataset_expected_checksum_md5 above,
+                # which is what actually binds identity).
+                "artifact_path": dataset_verification.artifact_path,
+            },
             "evaluation_config_hash": evaluation_id,
             "split": "validation",
             "n_validation_samples": len(split.sample_indices),

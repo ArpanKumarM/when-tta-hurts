@@ -85,15 +85,21 @@ def _guard_against_real_evaluation(monkeypatch):
     running for real. Patches the SOURCE module attributes production
     code actually calls (select_device is imported locally inside
     run_validation_evaluation at call time, so patching
-    when_tta_hurts.devices.select_device is sufficient; the other two
-    are imported at validation_evaluation module load time, so the
-    LOCAL bindings inside that module must be patched instead)."""
+    when_tta_hurts.devices.select_device is sufficient; the others are
+    imported at validation_evaluation module load time, so the LOCAL
+    bindings inside that module must be patched instead --
+    verify_official_dataset_artifact added per the Phase 2B.4D Data-
+    Integrity Addendum, now a real-data-touching call reachable from the
+    production evaluation path)."""
     monkeypatch.setattr("when_tta_hurts.devices.select_device", _guard_explode)
     monkeypatch.setattr(
         "when_tta_hurts.validation_evaluation.load_validation_evaluation_split", _guard_explode
     )
     monkeypatch.setattr(
         "when_tta_hurts.validation_evaluation.load_and_verify_canonical_checkpoint", _guard_explode
+    )
+    monkeypatch.setattr(
+        "when_tta_hurts.validation_evaluation.verify_official_dataset_artifact", _guard_explode
     )
     yield
 

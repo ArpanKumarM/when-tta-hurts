@@ -54,6 +54,37 @@ def _md5_of_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def expected_official_checksum(dataset: str, resolution: int) -> str:
+    """Metadata-only lookup of the official native-resolution artifact's
+    expected MD5, from medmnist.INFO -- no disk I/O, no file read; safe to
+    call before any dataset artifact necessarily exists locally (e.g. at
+    evaluation-identity-computation time). Raises ArtifactVerificationError
+    (fails closed) for an unsupported dataset, an unsupported/unregistered
+    resolution, or a missing MD5 key. This is the SINGLE SOURCE OF TRUTH
+    for the expected checksum -- verify_official_dataset_artifact() below
+    calls this internally rather than re-implementing the lookup, so there
+    is exactly one place the (dataset, resolution) -> expected-MD5 mapping
+    is defined.
+    """
+    if dataset not in INFO:
+        raise ArtifactVerificationError(f"Unsupported dataset '{dataset}' -- not in medmnist.INFO.")
+
+    md5_key = _INFO_MD5_KEY_BY_RESOLUTION.get(resolution)
+    if md5_key is None:
+        raise ArtifactVerificationError(
+            f"Unsupported/unregistered resolution {resolution} -- no known MD5 key "
+            f"convention for it. Registered resolutions: {sorted(_INFO_MD5_KEY_BY_RESOLUTION)}."
+        )
+
+    expected_checksum = INFO[dataset].get(md5_key)
+    if expected_checksum is None:
+        raise ArtifactVerificationError(
+            f"medmnist.INFO['{dataset}'] has no '{md5_key}' key -- cannot verify "
+            f"resolution={resolution}; failing closed rather than proceeding unverified."
+        )
+    return expected_checksum
+
+
 def verify_official_dataset_artifact(
     dataset: str,
     resolution: int,
@@ -75,22 +106,7 @@ def verify_official_dataset_artifact(
     file's bytes and therefore its MD5, so no resized file can ever match
     an official native-resolution checksum).
     """
-    if dataset not in INFO:
-        raise ArtifactVerificationError(f"Unsupported dataset '{dataset}' -- not in medmnist.INFO.")
-
-    md5_key = _INFO_MD5_KEY_BY_RESOLUTION.get(resolution)
-    if md5_key is None:
-        raise ArtifactVerificationError(
-            f"Unsupported/unregistered resolution {resolution} -- no known MD5 key "
-            f"convention for it. Registered resolutions: {sorted(_INFO_MD5_KEY_BY_RESOLUTION)}."
-        )
-
-    expected_checksum = INFO[dataset].get(md5_key)
-    if expected_checksum is None:
-        raise ArtifactVerificationError(
-            f"medmnist.INFO['{dataset}'] has no '{md5_key}' key -- cannot verify "
-            f"resolution={resolution}; failing closed rather than proceeding unverified."
-        )
+    expected_checksum = expected_official_checksum(dataset, resolution)
 
     filename = _artifact_filename(dataset, resolution)
     path = Path(root) / filename

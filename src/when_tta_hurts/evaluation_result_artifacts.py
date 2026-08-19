@@ -19,6 +19,10 @@ after persist_and_verify_evaluation_completion() has:
    probabilities and confirmed it matches metrics.json's own value (a
    metrics.json written by a different, buggy code path can never be
    marked completed even if internally self-consistent looking).
+7. Confirmed metadata.json's required "dataset_verification" section
+   (dataset/resolution match, well-formed expected/actual MD5 strings,
+   exact equality, resized=False) -- see
+   docs/phase2b_validation_evaluation_data_integrity_addendum.md.
 
 artifact_manifest.json necessarily excludes itself and status.json, for
 the same reason documented in result_artifacts.py.
@@ -72,10 +76,25 @@ _METADATA_REQUIRED_KEYS = {
     "source_commit",
     "evaluator_fingerprint",
     "evaluator_fingerprint_manifest",
+    "dataset_expected_checksum_md5",
+    "dataset_verification",
     "evaluation_config_hash",
     "split",
     "n_validation_samples",
 }
+
+_DATASET_VERIFICATION_REQUIRED_KEYS = {
+    "dataset",
+    "resolution",
+    "expected_checksum_md5",
+    "actual_checksum_md5",
+    "checksum_verified",
+    "resized",
+    "verification_method",
+    "verification_version",
+}
+
+_SUPPORTED_VERIFICATION_RESOLUTIONS = frozenset({28, 64, 128, 224})
 
 _VIEW_MANIFEST_REQUIRED_KEYS = {
     "dataset",
@@ -109,6 +128,72 @@ class EvaluationSchemaValidationError(EvaluationPersistenceError):
     """Raised when a written evaluation artifact is missing required keys."""
 
 
+def _validate_dataset_verification_schema(metadata: dict) -> None:
+    """Verify metadata.json's required "dataset_verification" section
+    (Phase 2B.4D Data-Integrity Addendum). Raises
+    EvaluationSchemaValidationError on ANY violation -- missing evidence,
+    a dataset/resolution mismatch against the sibling top-level metadata
+    fields, an unsupported resolution, a malformed checksum string, an
+    expected/actual checksum mismatch, or resized=True must never reach a
+    completed attempt."""
+    dv = metadata.get("dataset_verification")
+    if not isinstance(dv, dict):
+        raise EvaluationSchemaValidationError(
+            f"metadata.json 'dataset_verification' must be a mapping, got {type(dv).__name__}."
+        )
+    missing = _DATASET_VERIFICATION_REQUIRED_KEYS - set(dv.keys())
+    if missing:
+        raise EvaluationSchemaValidationError(
+            f"metadata.json 'dataset_verification' missing required key(s): {sorted(missing)}"
+        )
+    if dv["dataset"] != metadata["dataset"]:
+        raise EvaluationSchemaValidationError(
+            f"dataset_verification.dataset={dv['dataset']!r} does not match metadata.dataset="
+            f"{metadata['dataset']!r}."
+        )
+    if dv["resolution"] != metadata["resolution"]:
+        raise EvaluationSchemaValidationError(
+            f"dataset_verification.resolution={dv['resolution']!r} does not match "
+            f"metadata.resolution={metadata['resolution']!r}."
+        )
+    if dv["resolution"] not in _SUPPORTED_VERIFICATION_RESOLUTIONS:
+        raise EvaluationSchemaValidationError(
+            f"dataset_verification.resolution={dv['resolution']!r} is not a supported resolution "
+            f"{sorted(_SUPPORTED_VERIFICATION_RESOLUTIONS)}."
+        )
+
+    expected = dv["expected_checksum_md5"]
+    actual = dv["actual_checksum_md5"]
+    for name, value in (("expected_checksum_md5", expected), ("actual_checksum_md5", actual)):
+        if (
+            not isinstance(value, str)
+            or len(value) != 32
+            or not all(c in "0123456789abcdef" for c in value.lower())
+        ):
+            raise EvaluationSchemaValidationError(
+                f"dataset_verification.{name}={value!r} is not a well-formed 32-hex-character MD5."
+            )
+    if expected.lower() != actual.lower():
+        raise EvaluationSchemaValidationError(
+            f"dataset_verification: expected_checksum_md5={expected!r} does not equal "
+            f"actual_checksum_md5={actual!r} -- a checksum mismatch must never reach a completed "
+            f"attempt."
+        )
+    if dv["checksum_verified"] is not True:
+        raise EvaluationSchemaValidationError(
+            f"dataset_verification.checksum_verified must be True, got {dv['checksum_verified']!r}."
+        )
+    if dv["resized"] is not False:
+        raise EvaluationSchemaValidationError(
+            f"dataset_verification.resized must be False (native artifact only), got {dv['resized']!r}."
+        )
+    if metadata.get("dataset_expected_checksum_md5") != expected:
+        raise EvaluationSchemaValidationError(
+            "metadata.dataset_expected_checksum_md5 does not match "
+            "dataset_verification.expected_checksum_md5 -- identity binding inconsistency."
+        )
+
+
 def _validate_metadata_schema(metadata: dict) -> None:
     missing = _METADATA_REQUIRED_KEYS - set(metadata.keys())
     if missing:
@@ -117,6 +202,7 @@ def _validate_metadata_schema(metadata: dict) -> None:
         raise EvaluationSchemaValidationError(
             f"metadata.json split must be 'validation', got {metadata['split']!r}."
         )
+    _validate_dataset_verification_schema(metadata)
 
 
 def _validate_view_manifest_schema(view_manifest: dict) -> None:

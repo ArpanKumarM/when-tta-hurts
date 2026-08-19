@@ -475,6 +475,7 @@ def _cfg(**overrides):
         protocol_commit="ce4c962",
         matrix_hash="abc",
         evaluator_fingerprint="def",
+        dataset_expected_checksum_md5="a" * 32,
         tta_seed_config_sha256="cfg_sha256_abc",
         tta_seed_freeze_commit="c" * 40,
         tta_seed_derivation_sha256="4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
@@ -504,6 +505,7 @@ def test_production_evaluation_identity_uses_frozen_seed():
         ("policy", "geometric"),
         ("matrix_hash", "different"),
         ("evaluator_fingerprint", "different_fingerprint"),
+        ("dataset_expected_checksum_md5", "b" * 32),
         ("tta_seed_config_sha256", "different_sha"),
         ("tta_seed_freeze_commit", "d" * 40),
         ("tta_seed_derivation_sha256", "0" * 64),
@@ -1010,6 +1012,23 @@ def test_validate_predictions_rejects_missing_arrays():
         validate_predictions_arrays({"labels": np.arange(3)})
 
 
+_VALID_EXPECTED_MD5 = "0123456789abcdef0123456789abcdef"[:32]
+
+
+def _valid_dataset_verification(dataset="pathmnist", resolution=28, checksum=_VALID_EXPECTED_MD5):
+    return {
+        "dataset": dataset,
+        "resolution": resolution,
+        "expected_checksum_md5": checksum,
+        "actual_checksum_md5": checksum,
+        "checksum_verified": True,
+        "resized": False,
+        "verification_method": "dataset_verification.verify_official_dataset_artifact",
+        "verification_version": 1,
+        "artifact_path": f"data/raw/{dataset}.npz",
+    }
+
+
 def _valid_metadata():
     return {
         "evaluation_id": "e1",
@@ -1034,6 +1053,8 @@ def _valid_metadata():
         "source_commit": "s1",
         "evaluator_fingerprint": "fp1",
         "evaluator_fingerprint_manifest": {"src/when_tta_hurts/metrics.py": "abc123"},
+        "dataset_expected_checksum_md5": _VALID_EXPECTED_MD5,
+        "dataset_verification": _valid_dataset_verification(),
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
@@ -1600,7 +1621,12 @@ def test_completed_evaluation_skips_before_heavy_dependency_and_survives_head_ch
         commit_is_ancestor=_all_ancestors,
     )
     fingerprint, _ = compute_evaluator_fingerprint()
-    cfg = build_validation_evaluation_config(cell, training_result, seed_cfg, "matrixhash", fingerprint)
+    from when_tta_hurts.dataset_verification import expected_official_checksum
+
+    real_expected_checksum = expected_official_checksum(cell.dataset, cell.resolution)
+    cfg = build_validation_evaluation_config(
+        cell, training_result, seed_cfg, "matrixhash", fingerprint, real_expected_checksum
+    )
     evaluation_id = compute_evaluation_id(cfg)
 
     attempt_dir, status = start_evaluation_attempt(
