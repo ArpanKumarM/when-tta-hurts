@@ -23,6 +23,10 @@ artifacts/*
 # human-auditable-CSV rationale as the ledgers above. Committed header-only
 # during this engineering phase (no evaluation has run yet).
 !artifacts/ledger_validation_evaluation.csv
+# Phase 2B.4D evaluation-amendments ledger (mirrors artifacts/ledger_amendments.csv's
+# eligibility-overlay rationale) -- excludes canonical-ineligible completed
+# evaluation attempts without deleting their records.
+!artifacts/ledger_validation_evaluation_amendments.csv
 # The canonical Block D runtime-gate decision (INCLUDED/OMITTED) is a small,
 # permanent, machine-readable record -- tracked deliberately, unlike the
 # detailed raw benchmark timing dump it's derived from (artifacts/benchmarks/,
