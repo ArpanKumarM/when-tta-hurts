@@ -48,8 +48,8 @@ from when_tta_hurts.evaluation.aggregation import (
     mean_probability,
     original_anchored_mean_probability,
 )
-from when_tta_hurts.evaluation.bn_adaptation import BNAdaptationNotApplicableError, bn_adapt
-from when_tta_hurts.evaluation.latency import LatencyReport, measure_clean_latency, measure_tta_latency
+from when_tta_hurts.evaluation.bn_adaptation import BNAdaptationNotApplicableError, bn_adapt_sequential
+from when_tta_hurts.evaluation.latency import LatencyReport, measure_clean_latency
 from when_tta_hurts.evaluation.validation_loader import load_validation_evaluation_split
 from when_tta_hurts.evaluation.views import build_view_seed_manifest, iter_deterministic_views
 from when_tta_hurts.evaluation_result_artifacts import (
@@ -212,6 +212,18 @@ _FROZEN_TTA_SEED = 1306178015
 _EXCLUDED_TTA_SEEDS: frozenset[int] = frozenset({271828, 314159, 0, 1, 2})
 DEFAULT_TTA_SEED_CONFIG_PATH = Path("configs/validation_evaluation.yaml")
 
+# --- Phase 2B.4D OOM correction: frozen bounded-memory batching ----------
+# See docs/phase2b_validation_evaluation_batching_freeze.md for the full
+# memory audit, the BN-adaptation equivalence analysis, and the
+# protocol-underspecification finding that authorizes this
+# operationalization. Cross-validated against
+# configs/validation_evaluation.yaml exactly like PREFIX_SEQUENCE/
+# MAX_VIEWS/PRIMARY_N above.
+INFERENCE_BATCH_SIZE = 256
+BN_ADAPTATION_BATCH_SIZE = 256
+BN_ADAPTATION_ALGORITHM = "sequential_microbatch_v1"
+BN_ADAPTATION_ENUMERATION_ORDER = "view_major_then_sample_major"
+
 
 class FrozenTTASeedConfigError(RuntimeError):
     """Raised whenever the frozen confirmatory TTA-seed configuration
@@ -238,6 +250,10 @@ class FrozenTTASeedConfig:
     config_file_sha256: str
     freeze_commit: str
     config_path: str
+    inference_batch_size: int
+    bn_adaptation_batch_size: int
+    bn_adaptation_algorithm: str
+    bn_adaptation_enumeration_order: str
 
 
 _REQUIRED_TTA_SEED_CONFIG_FIELDS = {
@@ -252,6 +268,10 @@ _REQUIRED_TTA_SEED_CONFIG_FIELDS = {
     "primary_prefix",
     "primary_aggregation",
     "policy_identifier",
+    "inference_batch_size",
+    "bn_adaptation_batch_size",
+    "bn_adaptation_algorithm",
+    "bn_adaptation_enumeration_order",
 }
 
 
@@ -343,6 +363,26 @@ def load_frozen_tta_seed_config(
         raise FrozenTTASeedConfigError(
             f"{path} policy_identifier={raw['policy_identifier']!r} diverges from {POLICY_IDENTIFIER!r}."
         )
+    if raw["inference_batch_size"] != INFERENCE_BATCH_SIZE:
+        raise FrozenTTASeedConfigError(
+            f"{path} inference_batch_size={raw['inference_batch_size']!r} diverges from "
+            f"INFERENCE_BATCH_SIZE={INFERENCE_BATCH_SIZE}."
+        )
+    if raw["bn_adaptation_batch_size"] != BN_ADAPTATION_BATCH_SIZE:
+        raise FrozenTTASeedConfigError(
+            f"{path} bn_adaptation_batch_size={raw['bn_adaptation_batch_size']!r} diverges from "
+            f"BN_ADAPTATION_BATCH_SIZE={BN_ADAPTATION_BATCH_SIZE}."
+        )
+    if raw["bn_adaptation_algorithm"] != BN_ADAPTATION_ALGORITHM:
+        raise FrozenTTASeedConfigError(
+            f"{path} bn_adaptation_algorithm={raw['bn_adaptation_algorithm']!r} diverges from "
+            f"{BN_ADAPTATION_ALGORITHM!r}."
+        )
+    if raw["bn_adaptation_enumeration_order"] != BN_ADAPTATION_ENUMERATION_ORDER:
+        raise FrozenTTASeedConfigError(
+            f"{path} bn_adaptation_enumeration_order={raw['bn_adaptation_enumeration_order']!r} "
+            f"diverges from {BN_ADAPTATION_ENUMERATION_ORDER!r}."
+        )
 
     freeze_commit = last_commit_for_path(path)
     if freeze_commit is None:
@@ -371,6 +411,10 @@ def load_frozen_tta_seed_config(
         config_file_sha256=config_file_sha256,
         freeze_commit=freeze_commit,
         config_path=str(path),
+        inference_batch_size=raw["inference_batch_size"],
+        bn_adaptation_batch_size=raw["bn_adaptation_batch_size"],
+        bn_adaptation_algorithm=raw["bn_adaptation_algorithm"],
+        bn_adaptation_enumeration_order=raw["bn_adaptation_enumeration_order"],
     )
 
 
@@ -943,6 +987,67 @@ def _per_prefix_metrics(clean_probs: np.ndarray, agg_probs: np.ndarray, labels: 
     }
 
 
+# ---------------------------------------------------------------------------
+# Bounded-memory batching (Phase 2B.4D OOM correction) -- see
+# docs/phase2b_validation_evaluation_batching_freeze.md. No path below
+# ever materializes more than INFERENCE_BATCH_SIZE/BN_ADAPTATION_BATCH_SIZE
+# images on the target device at once, and no path materializes a list
+# containing more than one view's full-split CPU tensor at a time.
+# ---------------------------------------------------------------------------
+
+
+def _batched_forward(model: torch.nn.Module, images_cpu: torch.Tensor, device: torch.device, batch_size: int):
+    """Run `model(images_cpu)` in <=batch_size chunks (final partial batch
+    allowed), concatenating logits back into the original sample order.
+    Never holds more than one chunk on `device` at a time; each chunk
+    reference is released before the next is created."""
+    n = images_cpu.shape[0]
+    chunks: list = []
+    for start in range(0, n, batch_size):
+        batch = images_cpu[start : start + batch_size].to(device)
+        with torch.no_grad():
+            chunks.append(model(batch).detach().cpu().numpy())
+        del batch
+    return np.concatenate(chunks, axis=0)
+
+
+def _bn_adaptation_microbatches(
+    images_cpu: torch.Tensor,
+    policy,
+    tta_seed: int,
+    dataset: str,
+    resolution: int,
+    sample_indices,
+    n: int,
+    device: torch.device,
+    batch_size: int,
+):
+    """Yield <=batch_size image tensors (already moved to `device`),
+    covering every (sample, view) pair for views 0..n-1 exactly once, in
+    algorithm `sequential_microbatch_v1` order: view index ascending,
+    then (within each view) validation sample index ascending. Never
+    holds more than one view's full-split CPU tensor
+    (iter_deterministic_views() already bounds this to one view at a
+    time) and never holds more than one microbatch on `device` at a
+    time. Never concatenates across views."""
+    for _view_index, view_batch in iter_deterministic_views(
+        images_cpu, policy, tta_seed, dataset, resolution, sample_indices, n
+    ):
+        view_n = view_batch.shape[0]
+        for start in range(0, view_n, batch_size):
+            yield view_batch[start : start + batch_size].to(device)
+
+
+def _n_bn_adaptation_microbatches(n_samples: int, n_views: int, batch_size: int) -> int:
+    """Exact microbatch count algorithm sequential_microbatch_v1 produces
+    for `n_views` views over `n_samples` samples at `batch_size` --
+    computed analytically (matches _bn_adaptation_microbatches() exactly
+    by construction) so metadata provenance never requires actually
+    consuming/counting the lazy generator."""
+    chunks_per_view = (n_samples + batch_size - 1) // batch_size if n_samples > 0 else 0
+    return n_views * chunks_per_view
+
+
 def compute_validation_evaluation(
     model: torch.nn.Module,
     split,
@@ -958,12 +1063,11 @@ def compute_validation_evaluation(
     model = model.to(device)
     model.eval()
 
-    x = split.images.to(device)
+    images_cpu = split.images.detach().to("cpu")
     labels = split.labels
     sample_indices = split.sample_indices.tolist()
 
-    with torch.no_grad():
-        clean_logits = model(x).detach().cpu().numpy()
+    clean_logits = _batched_forward(model, images_cpu, device, INFERENCE_BATCH_SIZE)
     clean_probs = softmax(clean_logits)
     n_classes = clean_probs.shape[-1]  # derived from the model's actual output, not re-looked-up metadata
 
@@ -971,11 +1075,11 @@ def compute_validation_evaluation(
 
     view_probs = np.empty((MAX_VIEWS, len(sample_indices), n_classes), dtype=np.float32)
     for view_index, view_batch in iter_deterministic_views(
-        split.images, policy, tta_seed, split.dataset, split.resolution, sample_indices, MAX_VIEWS
+        images_cpu, policy, tta_seed, split.dataset, split.resolution, sample_indices, MAX_VIEWS
     ):
-        with torch.no_grad():
-            view_logits = model(view_batch.to(device)).detach().cpu().numpy()
+        view_logits = _batched_forward(model, view_batch, device, INFERENCE_BATCH_SIZE)
         view_probs[view_index] = softmax(view_logits)
+        del view_batch
     view_log_probs = np.log(np.clip(view_probs, 1e-12, 1.0))  # for aggregation.py's log-space convention
 
     conditions: dict[str, Any] = {"naive_tta": {agg: {} for agg in AGGREGATORS}}
@@ -999,19 +1103,26 @@ def compute_validation_evaluation(
     }
 
     bn_adapted_probs_by_n: dict[int, np.ndarray] = {}
+    bn_adaptation_microbatch_counts: dict[int, int] = {}
     try:
         conditions["bn_adapted_tta"] = {}
         for n in PREFIX_SEQUENCE:
-            adaptation_views = [
-                view_batch
-                for _view_index, view_batch in iter_deterministic_views(
-                    split.images, policy, tta_seed, split.dataset, split.resolution, sample_indices, n
-                )
-            ]
-            adaptation_inputs = torch.cat(adaptation_views, dim=0).to(device)
-            adapted_model = bn_adapt(model, adaptation_inputs)
-            with torch.no_grad():
-                adapted_logits = adapted_model(x).detach().cpu().numpy()
+            microbatches = _bn_adaptation_microbatches(
+                images_cpu,
+                policy,
+                tta_seed,
+                split.dataset,
+                split.resolution,
+                sample_indices,
+                n,
+                device,
+                BN_ADAPTATION_BATCH_SIZE,
+            )
+            adapted_model = bn_adapt_sequential(model, microbatches)
+            bn_adaptation_microbatch_counts[n] = _n_bn_adaptation_microbatches(
+                len(sample_indices), n, BN_ADAPTATION_BATCH_SIZE
+            )
+            adapted_logits = _batched_forward(adapted_model, images_cpu, device, INFERENCE_BATCH_SIZE)
             adapted_probs = softmax(adapted_logits)
             bn_adapted_probs_by_n[n] = adapted_probs
             conditions["bn_adapted_tta"][n] = _per_prefix_metrics(clean_probs, adapted_probs, labels)
@@ -1050,21 +1161,46 @@ def compute_validation_evaluation(
                 * conditions["naive_tta"]["mean_probability"][PRIMARY_N]["delta_accuracy"],
             },
         },
+        "batching": {
+            "inference_batch_size": INFERENCE_BATCH_SIZE,
+            "bn_adaptation_batch_size": BN_ADAPTATION_BATCH_SIZE,
+            "bn_adaptation_algorithm": BN_ADAPTATION_ALGORITHM,
+            "bn_adaptation_enumeration_order": BN_ADAPTATION_ENUMERATION_ORDER,
+            "bn_adaptation_microbatches_at_primary_n": bn_adaptation_microbatch_counts.get(PRIMARY_N),
+        },
     }
 
 
 # ---------------------------------------------------------------------------
-# Inference-latency measurement (Phase 2B.4D-Engineering) -- reuses
-# evaluation/latency.py's measure_clean_latency()/measure_tta_latency()
-# UNCHANGED. Does not call evaluation/latency.py::build_latency_report()
-# directly: that convenience wrapper requires every registered N's view
-# list to be materialized simultaneously (~193 view-batches total), which
-# is materially larger than necessary. This function calls the SAME
-# frozen primitives in a loop that generates and discards each N's views
-# immediately after timing, bounding peak memory to the single largest
-# registered N -- see
-# docs/phase2b_validation_evaluation_engineering_freeze.md sec.1.2/1.3.
+# Inference-latency measurement (Phase 2B.4D-Engineering, further bounded
+# by the Phase 2B.4D OOM correction) -- reuses evaluation/latency.py's
+# measure_clean_latency() UNCHANGED as the atomic per-chunk timing
+# primitive, called once per INFERENCE_BATCH_SIZE chunk and summed. Does
+# not call evaluation/latency.py::build_latency_report() or
+# measure_tta_latency() directly: both require a pre-built, fully-
+# materialized view list, which is exactly the unbounded-memory defect
+# this correction eliminates (see
+# docs/phase2b_validation_evaluation_batching_freeze.md sec.2, path 9).
+# Never holds more than one INFERENCE_BATCH_SIZE chunk on `device`, and
+# never more than one view's full-split CPU tensor, at a time.
 # ---------------------------------------------------------------------------
+
+
+def _measure_batched_latency(
+    model: torch.nn.Module, images_cpu: torch.Tensor, device: torch.device, batch_size: int
+) -> float:
+    """Total latency to run `images_cpu` through `model` in <=batch_size
+    chunks, reusing the frozen, unchanged measure_clean_latency() (sync
+    before/after each chunk) per chunk and summing -- measures the SAME
+    bounded-batch forward calls the production path actually uses,
+    never a single unbounded batch."""
+    total = 0.0
+    n = images_cpu.shape[0]
+    for start in range(0, n, batch_size):
+        chunk = images_cpu[start : start + batch_size].to(device)
+        total += measure_clean_latency(model, chunk, device)
+        del chunk
+    return total
 
 
 def compute_evaluation_latency_report(
@@ -1073,7 +1209,9 @@ def compute_evaluation_latency_report(
     tta_seed: int,
     device: torch.device,
 ) -> LatencyReport:
-    """Measure clean + per-registered-N TTA inference latency using the
+    """Measure clean + per-registered-N TTA inference latency over the
+    ACTUAL bounded-batch production inference path (INFERENCE_BATCH_SIZE-
+    chunked, not a separate differently-shaped measurement), using the
     SAME restored checkpoint (`model`), validation population (`split`),
     device, and registered N values (PREFIX_SEQUENCE) as the scientific
     evaluation already computed in this attempt. Never accepts labels or
@@ -1081,11 +1219,17 @@ def compute_evaluation_latency_report(
     influenced by scientific results. Never mutates or reads the
     already-computed scientific probability bank; regenerates its own
     deterministic view tensors via evaluation/views.py and discards them
-    immediately after timing."""
+    immediately after timing. View generation (the CPU-side deterministic
+    augmentation) remains OUTSIDE every timed region, exactly as in the
+    frozen, unchanged evaluation/latency.py primitives -- only the model
+    forward call(s) are timed, per docs/phase2b_validation_evaluation_
+    batching_freeze.md sec.4.3. Never materializes more than one view's
+    full-split CPU tensor, and never more than one INFERENCE_BATCH_SIZE
+    chunk on `device`, at a time."""
     model.eval()
-    x = split.images.to(device)
-    n_samples = x.shape[0]
-    clean_latency = measure_clean_latency(model, x, device)
+    images_cpu = split.images.detach().to("cpu")
+    n_samples = images_cpu.shape[0]
+    clean_latency = _measure_batched_latency(model, images_cpu, device, INFERENCE_BATCH_SIZE)
 
     policy = build_policy(POLICY_IDENTIFIER, output_size=(split.resolution, split.resolution))
     sample_indices = split.sample_indices.tolist()
@@ -1094,14 +1238,12 @@ def compute_evaluation_latency_report(
     per_sample_by_n: dict[int, float] = {}
     multiplier_by_n: dict[int, float] = {}
     for n in PREFIX_SEQUENCE:
-        views = [
-            view_batch.to(device)
-            for _view_index, view_batch in iter_deterministic_views(
-                split.images, policy, tta_seed, split.dataset, split.resolution, sample_indices, n
-            )
-        ]
-        total = measure_tta_latency(model, views, device)
-        del views
+        total = 0.0
+        for _view_index, view_batch in iter_deterministic_views(
+            images_cpu, policy, tta_seed, split.dataset, split.resolution, sample_indices, n
+        ):
+            total += _measure_batched_latency(model, view_batch, device, INFERENCE_BATCH_SIZE)
+            del view_batch
         tta_latency_by_n[n] = total
         per_sample_by_n[n] = total / n_samples if n_samples > 0 else 0.0
         multiplier_by_n[n] = (total / clean_latency) if clean_latency > 0 else float("inf")
@@ -1338,6 +1480,7 @@ def run_validation_evaluation(
                 # which is what actually binds identity).
                 "artifact_path": dataset_verification.artifact_path,
             },
+            "batching": outcome["batching"],
             "evaluation_config_hash": evaluation_id,
             "split": "validation",
             "n_validation_samples": len(split.sample_indices),

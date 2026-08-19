@@ -78,9 +78,18 @@ _METADATA_REQUIRED_KEYS = {
     "evaluator_fingerprint_manifest",
     "dataset_expected_checksum_md5",
     "dataset_verification",
+    "batching",
     "evaluation_config_hash",
     "split",
     "n_validation_samples",
+}
+
+_BATCHING_REQUIRED_KEYS = {
+    "inference_batch_size",
+    "bn_adaptation_batch_size",
+    "bn_adaptation_algorithm",
+    "bn_adaptation_enumeration_order",
+    "bn_adaptation_microbatches_at_primary_n",
 }
 
 _DATASET_VERIFICATION_REQUIRED_KEYS = {
@@ -194,6 +203,42 @@ def _validate_dataset_verification_schema(metadata: dict) -> None:
         )
 
 
+def _validate_batching_schema(metadata: dict) -> None:
+    """Verify metadata.json's required "batching" section (Phase 2B.4D
+    OOM correction). Raises EvaluationSchemaValidationError on missing or
+    malformed batching provenance -- a completed attempt must always
+    record the exact bounded-memory settings it ran under."""
+    batching = metadata.get("batching")
+    if not isinstance(batching, dict):
+        raise EvaluationSchemaValidationError(
+            f"metadata.json 'batching' must be a mapping, got {type(batching).__name__}."
+        )
+    missing = _BATCHING_REQUIRED_KEYS - set(batching.keys())
+    if missing:
+        raise EvaluationSchemaValidationError(f"metadata.json 'batching' missing key(s): {sorted(missing)}")
+    for name in ("inference_batch_size", "bn_adaptation_batch_size"):
+        value = batching[name]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise EvaluationSchemaValidationError(
+                f"batching.{name} must be a positive integer, got {value!r}."
+            )
+    n_micro = batching["bn_adaptation_microbatches_at_primary_n"]
+    if not isinstance(n_micro, int) or isinstance(n_micro, bool) or n_micro < 0:
+        raise EvaluationSchemaValidationError(
+            f"batching.bn_adaptation_microbatches_at_primary_n must be a nonnegative integer, "
+            f"got {n_micro!r}."
+        )
+    if not isinstance(batching["bn_adaptation_algorithm"], str) or not batching["bn_adaptation_algorithm"]:
+        raise EvaluationSchemaValidationError("batching.bn_adaptation_algorithm must be a non-empty string.")
+    if (
+        not isinstance(batching["bn_adaptation_enumeration_order"], str)
+        or not batching["bn_adaptation_enumeration_order"]
+    ):
+        raise EvaluationSchemaValidationError(
+            "batching.bn_adaptation_enumeration_order must be a non-empty string."
+        )
+
+
 def _validate_metadata_schema(metadata: dict) -> None:
     missing = _METADATA_REQUIRED_KEYS - set(metadata.keys())
     if missing:
@@ -203,6 +248,7 @@ def _validate_metadata_schema(metadata: dict) -> None:
             f"metadata.json split must be 'validation', got {metadata['split']!r}."
         )
     _validate_dataset_verification_schema(metadata)
+    _validate_batching_schema(metadata)
 
 
 def _validate_view_manifest_schema(view_manifest: dict) -> None:

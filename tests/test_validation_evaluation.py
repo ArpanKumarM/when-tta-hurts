@@ -94,6 +94,10 @@ total_generated_views: 100
 primary_prefix: 50
 primary_aggregation: mean_probability
 policy_identifier: mixed
+inference_batch_size: 256
+bn_adaptation_batch_size: 256
+bn_adaptation_algorithm: sequential_microbatch_v1
+bn_adaptation_enumeration_order: view_major_then_sample_major
 """
 
 
@@ -1029,6 +1033,16 @@ def _valid_dataset_verification(dataset="pathmnist", resolution=28, checksum=_VA
     }
 
 
+def _valid_batching():
+    return {
+        "inference_batch_size": 256,
+        "bn_adaptation_batch_size": 256,
+        "bn_adaptation_algorithm": "sequential_microbatch_v1",
+        "bn_adaptation_enumeration_order": "view_major_then_sample_major",
+        "bn_adaptation_microbatches_at_primary_n": 50,
+    }
+
+
 def _valid_metadata():
     return {
         "evaluation_id": "e1",
@@ -1055,6 +1069,7 @@ def _valid_metadata():
         "evaluator_fingerprint_manifest": {"src/when_tta_hurts/metrics.py": "abc123"},
         "dataset_expected_checksum_md5": _VALID_EXPECTED_MD5,
         "dataset_verification": _valid_dataset_verification(),
+        "batching": _valid_batching(),
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
@@ -1707,16 +1722,25 @@ def test_completed_evaluation_skips_before_heavy_dependency_and_survives_head_ch
 
 
 def test_compute_evaluation_latency_report_uses_frozen_primitives_not_reimplemented():
-    """evaluation/latency.py's measure_clean_latency()/measure_tta_latency()
-    are reused UNCHANGED -- this function must not reimplement timing or
-    synchronization logic itself."""
+    """evaluation/latency.py's measure_clean_latency() is reused UNCHANGED
+    (via the bounded-batch _measure_batched_latency() wrapper, Phase
+    2B.4D OOM correction) -- this function must not reimplement timing or
+    synchronization logic itself. measure_tta_latency()/build_latency_
+    report() are no longer used by the production path (both require a
+    pre-built, fully-materialized view list -- the unbounded-memory
+    defect this correction eliminates)."""
     import inspect
 
-    source = inspect.getsource(compute_evaluation_latency_report)
-    assert "measure_clean_latency(" in source
-    assert "measure_tta_latency(" in source
-    assert "time.perf_counter" not in source
-    assert "torch.mps.synchronize" not in source
+    from when_tta_hurts.validation_evaluation import _measure_batched_latency
+
+    report_source = inspect.getsource(compute_evaluation_latency_report)
+    helper_source = inspect.getsource(_measure_batched_latency)
+    assert "_measure_batched_latency(" in report_source
+    assert "measure_clean_latency(" in helper_source
+    assert "time.perf_counter" not in report_source
+    assert "time.perf_counter" not in helper_source
+    assert "torch.mps.synchronize" not in report_source
+    assert "torch.mps.synchronize" not in helper_source
 
 
 def test_compute_evaluation_latency_report_never_accepts_scientific_values():
@@ -1948,23 +1972,39 @@ def test_malformed_latency_report_causes_failed_status_never_completed(tmp_path,
 # ---------------------------------------------------------------------------
 
 
-def test_real_incident_row_unchanged_and_remains_attempt_1_aborted():
+def test_real_incident_rows_unchanged_attempt_1_aborted_attempt_2_failed():
+    """Two real, permanently-reserved, noncanonical attempts exist for
+    this training run: attempt 1 (Phase 2B.4B/4C test-harness escape,
+    aborted) and attempt 2 (Phase 2B.4D OOM at BN-adaptation N=100,
+    failed). Neither is a completed canonical evaluation; neither blocks
+    the next real attempt."""
     import csv
 
     with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
         rows = list(csv.DictReader(f))
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["evaluation_id"] == "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5"
-    assert row["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
-    assert row["evaluation_attempt"] == "1"
-    assert row["status"] == "aborted"
+    assert len(rows) == 2
+    row1, row2 = rows
+    assert row1["evaluation_id"] == "ab2dfad0322e9e80cdb5005ff536e65f3cd7212b90464dd83a89b18a2dbd7ac5"
+    assert row1["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
+    assert row1["evaluation_attempt"] == "1"
+    assert row1["status"] == "aborted"
+
+    assert row2["evaluation_id"] == "96fbf4705bf93f4e2115fb33b9837df1095c90549d1f86ed1b1c1c160cc7fffe"
+    assert row2["training_run_id"] == "A-pathmnist-28px-batchnorm-policy-none-s0"
+    assert row2["evaluation_attempt"] == "2"
+    assert row2["status"] == "failed"
+    assert row2["failure_reason"] == "Invalid buffer size: 9.35 GiB"
+    assert row2["test_metrics_observed"] == "False"
+
+    assert {row1["status"], row2["status"]}.isdisjoint({"completed"})
 
 
-def test_real_next_evaluation_attempt_number_is_still_2():
+def test_real_next_evaluation_attempt_number_is_now_3():
+    """Attempts 1 (aborted) and 2 (failed) both permanently reserve their
+    numbers; the next real attempt resolves to 3."""
     from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
 
-    assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 2
+    assert next_evaluation_attempt_number("A-pathmnist-28px-batchnorm-policy-none-s0") == 3
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ Exact procedure (frozen, do not deviate):
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable
 
 import torch
 from torch import nn
@@ -33,13 +34,15 @@ def _has_batchnorm(model: nn.Module) -> bool:
     return any(isinstance(m, nn.modules.batchnorm._BatchNorm) for m in model.modules())
 
 
-@torch.no_grad()
-def bn_adapt(model: nn.Module, adaptation_inputs: torch.Tensor) -> nn.Module:
-    """Return a NEW model (deep copy of `model`) with BatchNorm running
-    statistics adapted to `adaptation_inputs` via one forward pass.
-    `model` itself is never mutated. Raises BNAdaptationNotApplicableError
-    if `model` has no BatchNorm layers (GroupNorm cells).
-    """
+def _run_bn_adaptation_pass(model: nn.Module, batches: Iterable[torch.Tensor]) -> nn.Module:
+    """Shared core for bn_adapt()/bn_adapt_sequential(): deep-copy `model`,
+    verify BatchNorm is present, run a deterministic, no-gradient, train()-
+    mode forward pass over EACH tensor in `batches` in order (a
+    single-element iterable reproduces the original one-shot single-batch
+    behavior exactly -- same one forward call), verify every learned
+    parameter is bit-identical before/after, return to eval mode. `model`
+    itself is never mutated. Raises BNAdaptationNotApplicableError if
+    `model` has no BatchNorm layers (GroupNorm cells)."""
     if not _has_batchnorm(model):
         raise BNAdaptationNotApplicableError(
             "bn_adapt() called on a model with no BatchNorm layers -- BN adaptation "
@@ -53,7 +56,8 @@ def bn_adapt(model: nn.Module, adaptation_inputs: torch.Tensor) -> nn.Module:
     params_before = {name: p.detach().clone() for name, p in adapted.named_parameters()}
 
     adapted.train()  # BatchNorm only updates running stats in train() mode
-    _ = adapted(adaptation_inputs)  # one deterministic, no-gradient pass (decorator enforces no_grad)
+    for batch in batches:
+        _ = adapted(batch)  # deterministic, no-gradient forward pass (decorator enforces no_grad)
     adapted.eval()  # return to eval mode before prediction, per step 6
 
     params_after = dict(adapted.named_parameters())
@@ -67,3 +71,43 @@ def bn_adapt(model: nn.Module, adaptation_inputs: torch.Tensor) -> nn.Module:
             )
 
     return adapted
+
+
+@torch.no_grad()
+def bn_adapt(model: nn.Module, adaptation_inputs: torch.Tensor) -> nn.Module:
+    """Return a NEW model (deep copy of `model`) with BatchNorm running
+    statistics adapted to `adaptation_inputs` via one forward pass.
+    `model` itself is never mutated. Raises BNAdaptationNotApplicableError
+    if `model` has no BatchNorm layers (GroupNorm cells).
+
+    Unchanged, single-batch primitive -- kept for callers (and this
+    module's own existing test suite) that already have their full
+    adaptation population as one in-memory tensor. See
+    bn_adapt_sequential() for the bounded-memory, multi-microbatch
+    variant used by the production evaluation path (Phase 2B.4D OOM
+    correction, docs/phase2b_validation_evaluation_batching_freeze.md).
+    """
+    return _run_bn_adaptation_pass(model, [adaptation_inputs])
+
+
+@torch.no_grad()
+def bn_adapt_sequential(model: nn.Module, adaptation_batches: Iterable[torch.Tensor]) -> nn.Module:
+    """Return a NEW model (deep copy of `model`) with BatchNorm running
+    statistics adapted via a deterministic SEQUENCE of no-gradient
+    forward passes over `adaptation_batches` (an iterable of tensors,
+    each at most the frozen adaptation batch size -- algorithm
+    `sequential_microbatch_v1`, see
+    docs/phase2b_validation_evaluation_batching_freeze.md sec.4.2).
+    `model` itself is never mutated.
+
+    NOT mathematically equivalent to bn_adapt() when `adaptation_batches`
+    yields more than one tensor -- PyTorch BatchNorm's running-statistics
+    update is an order-sensitive exponential moving average applied on
+    EVERY forward call, so a sequence of microbatch calls computes a
+    genuinely different result than one call over the pooled population
+    (see the freeze document's deterministic synthetic proof). Passing a
+    single-element iterable reproduces bn_adapt()'s result exactly, by
+    construction (both delegate to the same shared core). Raises
+    BNAdaptationNotApplicableError if `model` has no BatchNorm layers.
+    """
+    return _run_bn_adaptation_pass(model, adaptation_batches)

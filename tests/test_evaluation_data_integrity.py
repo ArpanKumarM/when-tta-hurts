@@ -60,6 +60,10 @@ total_generated_views: 100
 primary_prefix: 50
 primary_aggregation: mean_probability
 policy_identifier: mixed
+inference_batch_size: 256
+bn_adaptation_batch_size: 256
+bn_adaptation_algorithm: sequential_microbatch_v1
+bn_adaptation_enumeration_order: view_major_then_sample_major
 """
 
 
@@ -85,6 +89,16 @@ def _valid_latency(n_samples=3, prefix_sequence=_VALID_PREFIX_SEQUENCE, clean_la
             "compute_multiplier": tta / clean_latency,
         }
     return {"clean_latency_seconds": clean_latency, "n_samples": n_samples, "by_n": by_n}
+
+
+def _valid_batching():
+    return {
+        "inference_batch_size": 256,
+        "bn_adaptation_batch_size": 256,
+        "bn_adaptation_algorithm": "sequential_microbatch_v1",
+        "bn_adaptation_enumeration_order": "view_major_then_sample_major",
+        "bn_adaptation_microbatches_at_primary_n": 50,
+    }
 
 
 def _valid_dataset_verification(dataset="pathmnist", resolution=28, checksum="a" * 32):
@@ -127,6 +141,7 @@ def _valid_metadata(dataset="pathmnist", resolution=28, checksum="a" * 32):
         "evaluator_fingerprint_manifest": {"src/when_tta_hurts/metrics.py": "abc123"},
         "dataset_expected_checksum_md5": checksum,
         "dataset_verification": _valid_dataset_verification(dataset, resolution, checksum),
+        "batching": _valid_batching(),
         "evaluation_config_hash": "e1",
         "split": "validation",
         "n_validation_samples": 3,
