@@ -428,15 +428,20 @@ def test_batchnorm_valid_case_persists_successfully(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_real_failed_groupnorm_attempt_remains_attempt_1_and_unchanged():
+def test_real_failed_groupnorm_attempt_1_remains_unchanged():
+    """Attempt 1's row is a permanently fixed historical fact -- checked
+    by attempt number, not by assuming it is the only row for this
+    run_id. A later real attempt (e.g. the corrected attempt 2 canary)
+    legitimately adds more rows without invalidating this record."""
     import csv
 
     with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
         rows = list(csv.DictReader(f))
-    matching = [r for r in rows if r["training_run_id"] == _REAL_GROUPNORM_RUN_ID]
-    assert len(matching) == 1
-    row = matching[0]
-    assert row["evaluation_attempt"] == "1"
+    by_attempt = {
+        int(r["evaluation_attempt"]): r for r in rows if r["training_run_id"] == _REAL_GROUPNORM_RUN_ID
+    }
+    assert 1 in by_attempt
+    row = by_attempt[1]
     assert row["status"] == "failed"
     assert row["evaluation_id"] == _REAL_GROUPNORM_FAILED_EVAL_ID
     assert (
@@ -446,26 +451,70 @@ def test_real_failed_groupnorm_attempt_remains_attempt_1_and_unchanged():
     assert row["test_metrics_observed"] == "False"
 
 
-def test_real_groupnorm_next_attempt_resolves_to_2():
-    assert next_evaluation_attempt_number(_REAL_GROUPNORM_RUN_ID) == 2
+def test_real_groupnorm_next_attempt_is_monotonic_and_gapless():
+    """next_evaluation_attempt_number() must always equal
+    max(existing attempt numbers for this run_id) + 1, read dynamically
+    from the real ledger's current state -- not a hardcoded number that
+    goes stale the instant another real attempt runs (exactly what
+    happened to this test's predecessor once the attempt-2 canary
+    completed)."""
+    import csv
+
+    with open("artifacts/ledger_validation_evaluation.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    attempt_numbers = {
+        int(r["evaluation_attempt"]) for r in rows if r["training_run_id"] == _REAL_GROUPNORM_RUN_ID
+    }
+    assert 1 in attempt_numbers  # historical floor must never shrink
+    expected_next = max(attempt_numbers) + 1
+    assert next_evaluation_attempt_number(_REAL_GROUPNORM_RUN_ID) == expected_next
 
 
-def test_real_groupnorm_failed_attempt_under_old_fingerprint_does_not_conflict():
+def test_failed_attempt_under_stale_fingerprint_never_conflicts(tmp_path):
     """A completed evaluation under a DIFFERENT config hash is a hard
     conflict (ConflictingEvaluationImplementationError) -- but a FAILED
     attempt never is, regardless of which evaluator fingerprint it ran
-    under. This must hold even after the engineering correction changes
-    the evaluator fingerprint (new source files -> new hash for any new
-    attempt), since check_evaluation_skip() only considers status=
-    "completed" attempts for the matching/conflicting buckets."""
-    # A hash that certainly differs from the real failed attempt's hash --
-    # simulates the new, post-correction evaluator fingerprint's identity.
-    new_hash = "post-correction-hash-does-not-matter-" + "0" * 20
+    under, since check_evaluation_skip() only considers status=
+    "completed" attempts for the matching/conflicting buckets. Uses a
+    synthetic, isolated tmp_path scenario (not the mutable real ledger,
+    which now also has a real completed attempt 2 for this run_id and so
+    can no longer represent the "only a failed attempt exists" case)."""
+    from when_tta_hurts.ledger import append_evaluation_entry
+    from when_tta_hurts.validation_evaluation import (
+        EvaluationRunStatus as _RunStatus,
+    )
+    from when_tta_hurts.validation_evaluation import (
+        finish_evaluation_attempt,
+        start_evaluation_attempt,
+    )
+
+    run_id = "synthetic-groupnorm-stale-fingerprint-run"
+    ledger_path = tmp_path / "ledger.csv"
+    old_hash = "old-fingerprint-hash-before-correction"
+
+    attempt_dir, status = start_evaluation_attempt(run_id, old_hash, root=tmp_path, ledger_path=ledger_path)
+    finish_evaluation_attempt(attempt_dir, status, _RunStatus.FAILED, failure_reason="schema bug")
+    append_evaluation_entry(
+        evaluation_id=old_hash,
+        training_run_id=run_id,
+        training_attempt=1,
+        checkpoint_hash="ckpt",
+        evaluation_config_hash=old_hash,
+        evaluation_attempt=status.attempt_number,
+        status="failed",
+        primary_artifact_hash="",
+        started_at=status.started_at,
+        ended_at="",
+        runtime_seconds="",
+        ledger_path=ledger_path,
+    )
+
+    new_hash = "new-fingerprint-hash-after-correction"
     try:
-        skip = check_evaluation_skip(_REAL_GROUPNORM_RUN_ID, new_hash)
+        skip = check_evaluation_skip(run_id, new_hash, root=tmp_path, ledger_path=ledger_path)
     except ConflictingEvaluationImplementationError:
         pytest.fail(
             "A failed attempt under the old evaluator fingerprint must never trigger "
             "ConflictingEvaluationImplementationError."
         )
-    assert skip is None  # no completed attempt exists yet -- permits a new attempt 2
+    assert skip is None  # no completed attempt exists -- permits a new attempt
