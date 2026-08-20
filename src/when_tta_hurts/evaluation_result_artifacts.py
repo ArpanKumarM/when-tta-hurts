@@ -90,6 +90,7 @@ _BATCHING_REQUIRED_KEYS = {
     "bn_adaptation_batch_size",
     "bn_adaptation_algorithm",
     "bn_adaptation_enumeration_order",
+    "bn_adaptation_applicable",
     "bn_adaptation_microbatches_at_primary_n",
 }
 
@@ -223,11 +224,15 @@ def _validate_batching_schema(metadata: dict) -> None:
             raise EvaluationSchemaValidationError(
                 f"batching.{name} must be a positive integer, got {value!r}."
             )
+    if not isinstance(batching["bn_adaptation_applicable"], bool):
+        raise EvaluationSchemaValidationError(
+            f"batching.bn_adaptation_applicable must be a bool, got {batching['bn_adaptation_applicable']!r}."
+        )
     n_micro = batching["bn_adaptation_microbatches_at_primary_n"]
     if not isinstance(n_micro, int) or isinstance(n_micro, bool) or n_micro < 0:
         raise EvaluationSchemaValidationError(
             f"batching.bn_adaptation_microbatches_at_primary_n must be a nonnegative integer, "
-            f"got {n_micro!r}."
+            f"got {n_micro!r}. None is never an accepted value."
         )
     if not isinstance(batching["bn_adaptation_algorithm"], str) or not batching["bn_adaptation_algorithm"]:
         raise EvaluationSchemaValidationError("batching.bn_adaptation_algorithm must be a non-empty string.")
@@ -238,6 +243,70 @@ def _validate_batching_schema(metadata: dict) -> None:
         raise EvaluationSchemaValidationError(
             "batching.bn_adaptation_enumeration_order must be a non-empty string."
         )
+
+
+def _validate_bn_adaptation_applicability_consistency(
+    metadata: dict, predictions: dict[str, np.ndarray], metrics: dict
+) -> None:
+    """Phase 2B.4F: bind BN-adaptation applicability to the authoritative
+    persisted `metadata.normalization` value and fail closed on any
+    contradictory combination of applicability flag, microbatch count,
+    reported bn_adapted_tta metrics, and persisted bn_adapted_probs /
+    bn_adapted_prefix_sequence evidence. Frozen contract:
+    docs/phase2b_validation_evaluation_groupnorm_persistence_freeze.md.
+    Called only after _validate_batching_schema() has already confirmed
+    bn_adaptation_applicable is a bool and the microbatch count is a
+    nonnegative int (never None)."""
+    normalization = metadata.get("normalization")
+    batching = metadata["batching"]
+    applicable = batching["bn_adaptation_applicable"]
+    n_micro = batching["bn_adaptation_microbatches_at_primary_n"]
+
+    expected_applicable = normalization == "batchnorm"
+    if applicable != expected_applicable:
+        raise EvaluationSchemaValidationError(
+            f"batching.bn_adaptation_applicable={applicable!r} contradicts "
+            f"metadata.normalization={normalization!r} (expected {expected_applicable!r})."
+        )
+
+    bn_adapted_tta = metrics.get("conditions", {}).get("bn_adapted_tta")
+    has_bn_probs = "bn_adapted_probs" in predictions
+    has_bn_prefix_sequence = "bn_adapted_prefix_sequence" in predictions
+
+    if applicable:
+        if n_micro <= 0:
+            raise EvaluationSchemaValidationError(
+                f"batching.bn_adaptation_microbatches_at_primary_n must be a positive integer "
+                f"when bn_adaptation_applicable=True, got {n_micro!r}."
+            )
+        if bn_adapted_tta is None:
+            raise EvaluationSchemaValidationError(
+                "bn_adaptation_applicable=True but metrics['conditions']['bn_adapted_tta'] is "
+                "None/missing -- every applicable evaluation must report BN-adapted metrics."
+            )
+        if not has_bn_probs or not has_bn_prefix_sequence:
+            raise EvaluationSchemaValidationError(
+                "bn_adaptation_applicable=True but predictions is missing bn_adapted_probs/"
+                "bn_adapted_prefix_sequence evidence."
+            )
+    else:
+        if n_micro != 0:
+            raise EvaluationSchemaValidationError(
+                f"batching.bn_adaptation_microbatches_at_primary_n must be exactly 0 when "
+                f"bn_adaptation_applicable=False, got {n_micro!r}."
+            )
+        if bn_adapted_tta is not None:
+            raise EvaluationSchemaValidationError(
+                "bn_adaptation_applicable=False but metrics['conditions']['bn_adapted_tta'] is not "
+                "None -- BN-adaptation-inapplicable (GroupNorm) evaluations must never report "
+                "BN-adapted metrics."
+            )
+        if has_bn_probs or has_bn_prefix_sequence:
+            raise EvaluationSchemaValidationError(
+                "bn_adaptation_applicable=False but predictions contains bn_adapted_probs/"
+                "bn_adapted_prefix_sequence -- BN-adaptation-inapplicable (GroupNorm) evaluations "
+                "must never persist BN-adapted probability evidence."
+            )
 
 
 def _validate_metadata_schema(metadata: dict) -> None:
@@ -487,6 +556,7 @@ def persist_and_verify_evaluation_completion(
     _validate_metadata_schema(metadata)
     _validate_view_manifest_schema(view_manifest)
     _validate_metrics_schema(metrics)
+    _validate_bn_adaptation_applicability_consistency(metadata, predictions, metrics)
     _validate_latency_schema(
         metrics["latency"], prefix_sequence, int(np.asarray(predictions["labels"]).shape[0])
     )

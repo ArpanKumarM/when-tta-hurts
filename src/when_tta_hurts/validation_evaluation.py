@@ -1358,7 +1358,14 @@ def compute_validation_evaluation(
             "bn_adaptation_batch_size": BN_ADAPTATION_BATCH_SIZE,
             "bn_adaptation_algorithm": BN_ADAPTATION_ALGORITHM,
             "bn_adaptation_enumeration_order": BN_ADAPTATION_ENUMERATION_ORDER,
-            "bn_adaptation_microbatches_at_primary_n": bn_adaptation_microbatch_counts.get(PRIMARY_N),
+            # Phase 2B.4F: bn_adaptation_applicable is the authoritative
+            # applicability signal (derived from whether BN-adaptation
+            # actually ran, i.e. conditions["bn_adapted_tta"] is not None --
+            # BNAdaptationNotApplicableError was raised for GroupNorm).
+            # microbatches defaults to 0 (never None) when inapplicable --
+            # see docs/phase2b_validation_evaluation_groupnorm_persistence_freeze.md.
+            "bn_adaptation_applicable": conditions["bn_adapted_tta"] is not None,
+            "bn_adaptation_microbatches_at_primary_n": bn_adaptation_microbatch_counts.get(PRIMARY_N, 0),
         },
     }
 

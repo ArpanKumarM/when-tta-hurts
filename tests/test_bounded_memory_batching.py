@@ -484,7 +484,8 @@ def _valid_batching_dict():
         "bn_adaptation_batch_size": 256,
         "bn_adaptation_algorithm": "sequential_microbatch_v1",
         "bn_adaptation_enumeration_order": "view_major_then_sample_major",
-        "bn_adaptation_microbatches_at_primary_n": 50,
+        "bn_adaptation_applicable": False,
+        "bn_adaptation_microbatches_at_primary_n": 0,
     }
 
 
@@ -512,7 +513,7 @@ def _valid_metadata_dict():
         "dataset": "pathmnist",
         "resolution": 28,
         "model": "small_cnn",
-        "normalization": "batchnorm",
+        "normalization": "groupnorm",
         "training_policy": "none",
         "seed": 0,
         "tta_seed": 1306178015,
