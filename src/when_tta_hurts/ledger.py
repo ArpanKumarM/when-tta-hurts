@@ -646,6 +646,50 @@ def is_canonical_ineligible(
     return False
 
 
+# ---------------------------------------------------------------------------
+# Phase 2B.5A: header-only ledger for read-only statistical-analysis
+# completions. Mirrors VALIDATION_EVALUATION_LEDGER_PATH's exact
+# discipline: append-only, header-only until a real analysis actually
+# runs (which does not happen during the Phase 2B.5A engineering task --
+# no row is ever appended by this repository's tests or by this task).
+# `test_split_accessed` is always False -- this ledger records analyses
+# of already-persisted validation-evaluation artifacts only.
+# ---------------------------------------------------------------------------
+
+STATISTICAL_ANALYSIS_LEDGER_PATH = Path("artifacts/ledger_statistical_analysis.csv")
+
+STATISTICAL_ANALYSIS_LEDGER_FIELDNAMES: tuple[str, ...] = (
+    "analysis_id",
+    "family",
+    "analysis_attempt",
+    "analysis_fingerprint",
+    "current_evaluator_fingerprint",
+    "status",
+    "primary_artifact_hash",
+    "started_at",
+    "ended_at",
+    "runtime_seconds",
+    "failure_reason",
+    "test_split_accessed",
+)
+
+
+def ensure_statistical_analysis_ledger_exists(
+    ledger_path: str | Path = STATISTICAL_ANALYSIS_LEDGER_PATH,
+) -> bool:
+    """Create a HEADER-ONLY statistical-analysis ledger file if it does
+    not already exist. Writes NO data row. Returns True if created, False
+    if it already existed (no-op)."""
+    path = Path(ledger_path)
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(STATISTICAL_ANALYSIS_LEDGER_FIELDNAMES))
+        writer.writeheader()
+    return True
+
+
 def is_evaluation_canonical_ineligible(
     evaluation_id: str, evaluation_attempt: int, ledger_path: str | Path = EVALUATION_AMENDMENTS_LEDGER_PATH
 ) -> bool:
