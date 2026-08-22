@@ -41,7 +41,20 @@ def _find_allow_test_true_calls(tree: ast.AST) -> list[ast.FunctionDef]:
     return hits
 
 
-_ACCEPTABLE_GUARD_NAMES = {"verify_authorization", "verify_final_test_authorization"}
+_ACCEPTABLE_GUARD_NAMES = {
+    "verify_authorization",
+    "verify_final_test_authorization",
+    # Phase 2B.6F: evaluation/test_loader.py no longer re-invokes the full
+    # dynamic verifier itself (docs/phase2b_final_test_attempt2_preaccess_failure.md
+    # documents why a second dynamic call is unsafe) -- it performs a
+    # static, comparative recheck against an already-issued
+    # VerifiedFinalTestReceipt instead. This is an equally valid guard:
+    # load_final_test_split() cannot be called without a receipt, and the
+    # receipt is itself only producible by a prior, real
+    # verify_final_test_authorization() call
+    # (docs/phase2b_final_test_authorization_receipt_freeze.md).
+    "verify_receipt_still_valid",
+}
 
 
 def _function_calls_verify_authorization(func_node: ast.FunctionDef | None) -> bool:

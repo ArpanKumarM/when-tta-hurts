@@ -1,4 +1,4 @@
-"""Phase 2B.6A: dedicated TEST-ONLY evaluation loader. Split is
+"""Phase 2B.6F: dedicated TEST-ONLY evaluation loader. Split is
 STRUCTURALLY fixed to 'test' -- there is no split parameter of any kind
 on load_final_test_split(), so no CLI flag or environment variable
 anywhere in this project can make it load anything else.
@@ -12,13 +12,24 @@ evaluation is which split's arrays were loaded. The validation loader
 itself is NEVER broadened to accept 'test' -- this is a wholly separate
 module and function.
 
-Calls verify_final_test_authorization() itself, in addition to whatever
-the orchestrator already did, as a structural belt-and-suspenders
-guarantee: this function can never load test data even if some future
-caller forgot to check authorization first. This is the only call site
-in the entire project that passes allow_test=True to data.py::load_dataset()
--- see tests/test_split_firewall_static.py, which statically enforces
-that this (and only this) guarded call site exists.
+Requires an already-verified `VerifiedFinalTestReceipt` (produced once by
+the orchestrator's single upfront verify_final_test_authorization() call,
+per docs/phase2b_final_test_authorization_receipt_freeze.md) rather than
+re-invoking the full, dynamic verifier itself. The prior design's
+redundant re-invocation caused a real, universal, mechanically-diagnosed
+failure (docs/phase2b_final_test_attempt2_preaccess_failure.md): schema
+v2's exact-attempt-binding check recomputes the next allocatable attempt
+LIVE on every call, so a second call after the active attempt's directory
+had already been allocated always observed one attempt number higher
+than the first (correct) call did. This module now performs only a
+STATIC, comparative recheck (verify_receipt_still_valid()) against the
+already-issued receipt -- never a fresh dynamic attempt-number
+computation -- immediately before test-data access.
+
+This is the only call site in the entire project that passes
+allow_test=True to data.py::load_dataset() -- see
+tests/test_split_firewall_static.py, which statically enforces that this
+(and only this) guarded call site exists.
 """
 
 from __future__ import annotations
@@ -32,7 +43,7 @@ from torch.utils.data import DataLoader
 from when_tta_hurts.data import load_dataset
 from when_tta_hurts.dataset_verification import verify_official_dataset_artifact
 from when_tta_hurts.evaluation.validation_loader import ValidationEvaluationSplit
-from when_tta_hurts.final_test_authorization import verify_final_test_authorization
+from when_tta_hurts.final_test_authorization import VerifiedFinalTestReceipt, verify_receipt_still_valid
 
 
 class TestLoaderError(RuntimeError):
@@ -46,13 +57,19 @@ def load_final_test_split(
     dataset: str,
     resolution: int,
     root: str | Path = "data/raw",
-    authorization_artifact_path=None,
-    authorization_matrix_path: str = "configs/experiment_matrix.yaml",
+    *,
+    receipt: VerifiedFinalTestReceipt,
 ) -> ValidationEvaluationSplit:
     """Load the official TEST split ONLY -- 'test' is hardcoded, never a
-    parameter. Order, in this function:
-    1. verify committed final-test authorization (no device/dataset
-       access before this succeeds);
+    parameter. `receipt` is REQUIRED (keyword-only, no default) --
+    produced once by the orchestrator's single
+    verify_final_test_authorization() call before attempt allocation.
+    This function never independently invokes the full verifier. Order,
+    in this function:
+    1. statically recheck the already-issued receipt (bytes/tracked-
+       clean/fingerprints/checksum unchanged, and bound to THIS exact
+       dataset/resolution) -- never recomputes an attempt number, never
+       scans the active run's attempt directory/ledger;
     2. verify the official whole-file checksum of the exact native
        artifact for (dataset, resolution) BEFORE any array access, and
        reject a resized/proxy substitute;
@@ -65,10 +82,7 @@ def load_final_test_split(
        validation_evaluation.py's scientific functions already consume,
        so no scientific code needs to change for split=test).
     """
-    auth_kwargs = {}
-    if authorization_artifact_path is not None:
-        auth_kwargs["artifact_path"] = authorization_artifact_path
-    verify_final_test_authorization(matrix_path=authorization_matrix_path, **auth_kwargs)
+    verify_receipt_still_valid(receipt, dataset, resolution)
 
     verification = verify_official_dataset_artifact(dataset, resolution, root=root)
     if verification.resized:

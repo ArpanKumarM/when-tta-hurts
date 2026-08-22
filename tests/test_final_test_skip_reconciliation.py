@@ -270,10 +270,17 @@ def test_run_final_test_evaluation_uses_the_corrected_skip_function(monkeypatch,
             self.cells = cells
             self.source_config_hash = "fake-matrix-hash"
 
+    class _FakeReceipt:
+        dataset = "pathmnist"
+        resolution = 28
+
     class _FakeAuthorization:
         authorized_cells_by_run_id = {"fake-run-a": {"training_attempt": 1, "checkpoint_hash": "chk-a"}}
         artifact_sha256 = "fake-artifact-sha"
         authorization_commit = "fake-authorization-commit"
+
+        def receipt_for(self, run_id):
+            return _FakeReceipt()
 
     class _FakeSeedConfig:
         confirmatory_tta_seed = 1306178015

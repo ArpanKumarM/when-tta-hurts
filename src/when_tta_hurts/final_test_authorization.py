@@ -81,7 +81,14 @@ _REQUIRED_KEYS = {
     "authorized_cells",
 }
 
-_REQUIRED_CELL_KEYS = {"run_id", "training_attempt", "checkpoint_hash", "authorized_final_test_attempt"}
+_REQUIRED_CELL_KEYS = {
+    "run_id",
+    "training_attempt",
+    "checkpoint_hash",
+    "authorized_final_test_attempt",
+    "dataset",
+    "resolution",
+}
 
 # If ANY of these supersession keys is present, ALL of them must be
 # present (all-or-nothing) and are fully verified -- a schema-v2
@@ -109,6 +116,36 @@ class FinalTestAuthorizationError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class VerifiedFinalTestReceipt:
+    """Immutable, single-cell snapshot of an already-successful
+    verify_final_test_authorization() call. Constructible ONLY via
+    FinalTestAuthorization.receipt_for() -- there is no public
+    constructor accepting caller-supplied field values, and no
+    from_dict()/deserialization path anywhere in this module. Captures
+    the run's authorized attempt number as a SNAPSHOT, taken at
+    verification time -- it is never recomputed afterward (see
+    docs/phase2b_final_test_authorization_receipt_freeze.md, which this
+    type implements)."""
+
+    run_id: str
+    authorized_attempt: int
+    checkpoint_hash: str
+    training_attempt: int
+    dataset: str
+    resolution: int
+    dataset_expected_checksum_md5: str
+    evaluator_fingerprint: str
+    statistical_analysis_fingerprint: str
+    cross_condition_analysis_fingerprint: str
+    final_test_runner_fingerprint: str
+    authorization_artifact_sha256: str
+    authorization_commit: str
+    phase2b_protocol_commit: str
+    matrix_commit: str
+    cross_condition_addendum_commit: str
+
+
+@dataclass(frozen=True)
 class FinalTestAuthorization:
     status: str
     schema_version: str
@@ -121,6 +158,7 @@ class FinalTestAuthorization:
     cross_condition_analysis_fingerprint: str
     final_test_runner_fingerprint: str
     authorized_cells_by_run_id: dict[str, dict[str, Any]]
+    official_dataset_checksums: dict[str, str]
     artifact_sha256: str
     authorization_commit: str
     supersedes_authorization_sha256: str | None
@@ -128,6 +166,44 @@ class FinalTestAuthorization:
     incident_record_commit: str | None
     recovery_policy_commit: str | None
     no_further_retry: bool | None
+
+    def receipt_for(self, run_id: str) -> VerifiedFinalTestReceipt:
+        """The ONLY way to construct a VerifiedFinalTestReceipt. Reads
+        exclusively from THIS already-verified object's own fields --
+        never re-invokes next_evaluation_attempt_number() or any other
+        dynamic/stateful check. Raises FinalTestAuthorizationError if
+        `run_id` was not part of the authorized cell set (should be
+        unreachable given verify_final_test_authorization()'s own
+        upfront run_id-set check, but never assumed)."""
+        entry = self.authorized_cells_by_run_id.get(run_id)
+        if entry is None:
+            raise FinalTestAuthorizationError(f"No authorized cell for run_id {run_id!r}.")
+        dataset = entry["dataset"]
+        resolution = entry["resolution"]
+        checksum_key = f"{dataset}@{resolution}"
+        dataset_expected_checksum_md5 = self.official_dataset_checksums.get(checksum_key)
+        if dataset_expected_checksum_md5 is None:
+            raise FinalTestAuthorizationError(
+                f"No official_dataset_checksums entry for {checksum_key!r} -- cannot issue a receipt."
+            )
+        return VerifiedFinalTestReceipt(
+            run_id=run_id,
+            authorized_attempt=entry["authorized_final_test_attempt"],
+            checkpoint_hash=entry["checkpoint_hash"],
+            training_attempt=entry["training_attempt"],
+            dataset=dataset,
+            resolution=resolution,
+            dataset_expected_checksum_md5=dataset_expected_checksum_md5,
+            evaluator_fingerprint=self.evaluator_fingerprint,
+            statistical_analysis_fingerprint=self.statistical_analysis_fingerprint,
+            cross_condition_analysis_fingerprint=self.cross_condition_analysis_fingerprint,
+            final_test_runner_fingerprint=self.final_test_runner_fingerprint,
+            authorization_artifact_sha256=self.artifact_sha256,
+            authorization_commit=self.authorization_commit,
+            phase2b_protocol_commit=self.phase2b_protocol_commit,
+            matrix_commit=self.matrix_commit,
+            cross_condition_addendum_commit=self.cross_condition_addendum_commit,
+        )
 
 
 def _git(repo_root: str | Path, *args: str) -> str:
@@ -416,6 +492,7 @@ def verify_final_test_authorization(
         cross_condition_analysis_fingerprint=raw["cross_condition_analysis_fingerprint"],
         final_test_runner_fingerprint=raw["final_test_runner_fingerprint"],
         authorized_cells_by_run_id=authorized_by_run_id,
+        official_dataset_checksums=dataset_checksums,
         artifact_sha256=hash_file(full_path),
         authorization_commit=authorization_commit,
         supersedes_authorization_sha256=raw.get("supersedes_authorization_sha256"),
@@ -424,3 +501,83 @@ def verify_final_test_authorization(
         recovery_policy_commit=raw.get("recovery_policy_commit"),
         no_further_retry=raw.get("no_further_retry"),
     )
+
+
+def verify_receipt_still_valid(
+    receipt: VerifiedFinalTestReceipt,
+    dataset: str,
+    resolution: int,
+    artifact_path: str | Path = FINAL_TEST_AUTHORIZATION_PATH,
+    repo_root: str | Path = ".",
+) -> None:
+    """Static, comparative recheck performed by the test-only loader
+    immediately before test-data access (Phase 2B.6F, item 5 of
+    docs/phase2b_final_test_authorization_receipt_freeze.md). Confirms
+    the receipt is still trustworthy WITHOUT ever recomputing an attempt
+    number or scanning the active run's attempt directory/ledger history
+    -- the exact defect this module corrects
+    (docs/phase2b_final_test_attempt2_preaccess_failure.md).
+
+    Raises FinalTestAuthorizationError on ANY of:
+    - `dataset`/`resolution` (the loader's own call arguments) do not
+      match the receipt's bound dataset/resolution -- a receipt for a
+      different cell must never be silently reused;
+    - the authorization file no longer exists;
+    - its current SHA-256 no longer matches the receipt's bound value;
+    - it is no longer tracked-and-clean in git;
+    - any of the four fingerprints has drifted since the receipt was
+      issued;
+    - the official expected checksum for (dataset, resolution) has
+      drifted since the receipt was issued.
+    """
+    if receipt.dataset != dataset or receipt.resolution != resolution:
+        raise FinalTestAuthorizationError(
+            f"Receipt is bound to {receipt.dataset}@{receipt.resolution}px, but this loader call "
+            f"requested {dataset}@{resolution}px -- refusing to reuse a receipt for a different cell."
+        )
+
+    repo_root = Path(repo_root)
+    rel_path = str(artifact_path)
+    full_path = repo_root / rel_path
+
+    if not full_path.exists():
+        raise FinalTestAuthorizationError(
+            f"Authorization artifact {full_path} no longer exists -- receipt is no longer valid."
+        )
+    current_sha256 = hash_file(full_path)
+    if current_sha256 != receipt.authorization_artifact_sha256:
+        raise FinalTestAuthorizationError(
+            "Authorization artifact bytes have changed since the receipt was issued -- receipt is no "
+            "longer valid."
+        )
+    if not _is_tracked_and_clean(repo_root, rel_path):
+        raise FinalTestAuthorizationError(
+            f"Authorization artifact {full_path} is no longer tracked-and-clean in git -- receipt is "
+            f"no longer valid."
+        )
+
+    current_evaluator_fp, _ = compute_evaluator_fingerprint()
+    if receipt.evaluator_fingerprint != current_evaluator_fp:
+        raise FinalTestAuthorizationError("evaluator_fingerprint has drifted since the receipt was issued.")
+    current_analysis_fp, _ = compute_analysis_fingerprint()
+    if receipt.statistical_analysis_fingerprint != current_analysis_fp:
+        raise FinalTestAuthorizationError(
+            "statistical_analysis_fingerprint has drifted since the receipt was issued."
+        )
+    current_cross_fp, _ = compute_cross_condition_fingerprint()
+    if receipt.cross_condition_analysis_fingerprint != current_cross_fp:
+        raise FinalTestAuthorizationError(
+            "cross_condition_analysis_fingerprint has drifted since the receipt was issued."
+        )
+    current_runner_fp, _ = compute_final_test_runner_fingerprint()
+    if receipt.final_test_runner_fingerprint != current_runner_fp:
+        raise FinalTestAuthorizationError(
+            "final_test_runner_fingerprint has drifted since the receipt was issued."
+        )
+
+    current_expected_checksum = expected_official_checksum(dataset, resolution)
+    if receipt.dataset_expected_checksum_md5 != current_expected_checksum:
+        raise FinalTestAuthorizationError(
+            f"Official expected checksum for {dataset}@{resolution}px has drifted since the receipt "
+            f"was issued."
+        )

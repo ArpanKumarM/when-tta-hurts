@@ -401,6 +401,15 @@ def run_final_test_evaluation(
             f"set -- refusing to proceed."
         )
 
+    # Immutable, single-cell receipt derived ONCE from the already-
+    # verified authorization (Phase 2B.6F,
+    # docs/phase2b_final_test_authorization_receipt_freeze.md). Passed
+    # through to the test loader instead of letting it re-invoke the
+    # full, dynamic verifier a second time after attempt allocation --
+    # see docs/phase2b_final_test_attempt2_preaccess_failure.md for why
+    # a second dynamic call is unsafe.
+    receipt = authorization.receipt_for(run_id)
+
     # Step 4: resolve canonical training completion.
     cell, training_result = resolve_canonical_training_completion(run_id, matrix_path)
 
@@ -463,15 +472,15 @@ def run_final_test_evaluation(
     test_predictions_computed = False
     test_metrics_computed = False
     test_metrics_persisted = False
-    failure_stage = "device_init"
+    failure_stage = "device_initialization"
     try:
         # Step 9: initialize the requested device.
         device = device_resolver()
-        failure_stage = "checkpoint_load"
+        failure_stage = "checkpoint_restore"
 
         # Step 10: restore checkpoint.
         model = load_and_verify_canonical_checkpoint(cell, training_result, training_root)
-        failure_stage = "dataset_verification"
+        failure_stage = "dataset_checksum_verification"
 
         # Step 11: verify official dataset artifact checksum from raw file bytes.
         dataset_verification = verify_official_dataset_artifact(cell.dataset, cell.resolution, root=data_root)
@@ -480,16 +489,19 @@ def run_final_test_evaluation(
                 "Expected checksum resolved at identity-computation time does not match the "
                 "expected checksum resolved at verification time -- refusing an inconsistent binding."
             )
-        failure_stage = "test_data_load"
+        failure_stage = "test_array_load"
 
         # Step 12: load only test_images/test_labels.
-        split = load_final_test_split(
-            cell.dataset,
-            cell.resolution,
-            data_root,
-            authorization_artifact_path=authorization_artifact_path,
-            authorization_matrix_path=matrix_path,
-        )
+        try:
+            split = load_final_test_split(cell.dataset, cell.resolution, data_root, receipt=receipt)
+        except FinalTestAuthorizationError:
+            # The loader's OWN static receipt recheck failed -- distinct
+            # from a genuine test-array-load failure (corrupt file, shape
+            # mismatch, etc), per
+            # docs/phase2b_final_test_authorization_receipt_freeze.md
+            # item 10.
+            failure_stage = "test_loader_authorization_receipt"
+            raise
         test_split_accessed = True
         failure_stage = "inference"
 

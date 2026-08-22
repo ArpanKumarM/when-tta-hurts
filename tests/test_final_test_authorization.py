@@ -110,6 +110,8 @@ def _valid_content(
                 "training_attempt": training_attempt,
                 "checkpoint_hash": checkpoint_hash,
                 "authorized_final_test_attempt": authorized_final_test_attempt,
+                "dataset": "pathmnist",
+                "resolution": 28,
             }
             for run_id in cells
         ],

@@ -58,11 +58,21 @@ class _FakeExpanded:
         self.source_config_hash = "fake-matrix-hash"
 
 
+class _FakeReceipt:
+    def __init__(self, run_id):
+        self.run_id = run_id
+        self.dataset = "pathmnist"
+        self.resolution = 28
+
+
 class _FakeAuthorization:
     def __init__(self, run_id="fake-run-a"):
         self.authorized_cells_by_run_id = {run_id: {"training_attempt": 1, "checkpoint_hash": "chk-a"}}
         self.artifact_sha256 = "fake-artifact-sha"
         self.authorization_commit = "fake-authorization-commit"
+
+    def receipt_for(self, run_id):
+        return _FakeReceipt(run_id)
 
 
 class _FakeSeedConfig:
@@ -193,7 +203,7 @@ def test_failure_before_test_access_records_truthful_flags(monkeypatch, tmp_path
     assert len(rows) == 1
     row = rows[0]
     assert row["status"] == "failed"
-    assert row["failure_stage"] == "checkpoint_load"
+    assert row["failure_stage"] == "checkpoint_restore"
     assert row["test_split_accessed"] == "False"
     assert row["test_predictions_computed"] == "False"
     assert row["test_metrics_observed"] == "False"
