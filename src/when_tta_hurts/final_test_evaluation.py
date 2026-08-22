@@ -66,14 +66,18 @@ from when_tta_hurts.validation_evaluation import (
     PREFIX_SEQUENCE,
     PRIMARY_N,
     SECONDARY_ANALYSES,
+    AmbiguousEvaluationCompletionError,
+    ConflictingEvaluationImplementationError,
+    EvaluationLedgerConflictError,
     EvaluationRunStatus,
+    EvaluationStaleAttemptError,
     _git_commit_hash,
     _latency_report_to_dict,
     _verify_metrics_semantically,
-    check_evaluation_skip,
     compute_evaluation_latency_report,
     compute_evaluator_fingerprint,
     compute_validation_evaluation,
+    evaluation_run_directory,
     finish_evaluation_attempt,
     list_evaluation_attempts,
     load_and_verify_canonical_checkpoint,
@@ -86,6 +90,164 @@ from when_tta_hurts.validation_evaluation import (
 
 DEFAULT_FINAL_TEST_ROOT = Path("artifacts/final_test")
 DEFAULT_FINAL_TEST_AMENDMENTS_LEDGER_PATH = Path("artifacts/ledger_final_test_amendments.csv")
+
+# Terminal statuses for a final-test attempt -- mirrors
+# validation_evaluation.py's private _TERMINAL_EVAL_STATUSES exactly, but
+# redefined here (rather than imported) so this module's stale/skip logic
+# has no dependency on that module's private name, keeping the fix fully
+# self-contained to FINAL_TEST_RUNNER_MANIFEST-covered files.
+_FINAL_TEST_TERMINAL_STATUSES = frozenset({"completed", "failed", "aborted"})
+
+
+def check_final_test_evaluation_skip(
+    training_run_id: str,
+    evaluation_config_hash: str,
+    root: str | Path = DEFAULT_FINAL_TEST_ROOT,
+    ledger_path: str | Path | None = None,
+    amendments_ledger_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Final-test-specific idempotent-skip check, correcting the defect in
+    docs/phase2b_final_test_accidental_access_incident.md sec.8:
+    validation_evaluation.check_evaluation_skip()'s internal call to
+    ledger_module.has_evaluation_row(evaluation_config_hash, attempt) (a)
+    reads CSV column 'evaluation_id', which does not exist in
+    FINAL_TEST_LEDGER_FIELDNAMES (that schema uses
+    'final_test_evaluation_id'/'evaluation_config_hash' instead), and
+    (b) never receives the caller's ledger_path, always reading the
+    VALIDATION ledger's default path regardless. Both are fixed here by
+    reading the final-test ledger directly, by its own correct columns.
+
+    Otherwise mirrors check_evaluation_skip()'s exact algorithm and
+    ordering, with one deliberate refinement: the "unledgered" staleness
+    check (step 1) asks "does ANY ledger row exist for (training_run_id,
+    attempt_number)" -- not "does a row exist under the CURRENT request's
+    hash specifically". This is the correct semantic for reconciling an
+    externally-terminated attempt whose historical hash legitimately
+    differs from a fresh request's hash after a runner-code fix (exactly
+    this incident's recovery scenario) -- hash agreement for a GIVEN
+    attempt number between directory and ledger remains strictly enforced
+    in the consistency-check step (step 2) that follows, unchanged in
+    spirit from the original algorithm.
+
+    Metadata-only: does NOT touch MPS, the checkpoint, the dataset, view
+    generation, or metric calculation.
+
+    In order:
+    1. For every attempt DIRECTORY (any status): if nonterminal AND no
+       ledger row exists at all for (training_run_id, attempt_number),
+       raise EvaluationStaleAttemptError.
+    2. Ledger/directory consistency, per (training_run_id, attempt_number):
+       directory+ledger hash mismatch -> EvaluationLedgerConflictError;
+       ledger-only row must be terminal (aborted/failed) or hard-fail;
+       directory-only terminal status with no ledger row -> hard-fail.
+    3. Among completed, artifact-manifest-verified attempts: ambiguous
+       (>1 matching current hash) -> AmbiguousEvaluationCompletionError;
+       exactly one matching -> return it; none matching but a completed
+       attempt exists under a DIFFERENT hash ->
+       ConflictingEvaluationImplementationError; otherwise return None.
+    """
+    from when_tta_hurts import ledger as ledger_module
+    from when_tta_hurts.final_test_result_artifacts import verify_final_test_artifact_manifest
+
+    if ledger_path is None:
+        ledger_path = ledger_module.FINAL_TEST_LEDGER_PATH
+    if amendments_ledger_path is None:
+        amendments_ledger_path = DEFAULT_FINAL_TEST_AMENDMENTS_LEDGER_PATH
+
+    run_dir = evaluation_run_directory(training_run_id, root)
+    all_attempts = list_evaluation_attempts(training_run_id, root)
+    dir_by_number = {s["attempt_number"]: s for s in all_attempts}
+
+    ledger_rows_for_run = [
+        row
+        for row in ledger_module._read_existing_rows(ledger_path)
+        if row.get("training_run_id") == training_run_id
+    ]
+    ledger_by_number: dict[int, dict[str, Any]] = {}
+    for row in ledger_rows_for_run:
+        ledger_by_number.setdefault(int(row["evaluation_attempt"]), row)
+
+    for status in all_attempts:
+        if status.get("status") not in _FINAL_TEST_TERMINAL_STATUSES:
+            if status["attempt_number"] not in ledger_by_number:
+                raise EvaluationStaleAttemptError(
+                    f"Final-test evaluation of {training_run_id} attempt_{status['attempt_number']:03d} "
+                    f"is nonterminal (status='{status.get('status')}') and has no ledger row -- "
+                    f"refusing to start a new attempt without explicit reconciliation."
+                )
+
+    for number in sorted(set(dir_by_number) | set(ledger_by_number)):
+        dir_status = dir_by_number.get(number)
+        ledger_row = ledger_by_number.get(number)
+        if dir_status is not None and ledger_row is not None:
+            if dir_status["evaluation_config_hash"] != ledger_row["evaluation_config_hash"]:
+                raise EvaluationLedgerConflictError(
+                    f"{training_run_id} attempt_{number:03d}: directory evaluation_config_hash "
+                    f"{dir_status['evaluation_config_hash']} does not match ledger row's "
+                    f"{ledger_row['evaluation_config_hash']}."
+                )
+        elif dir_status is None and ledger_row is not None:
+            if ledger_row["status"] not in ("aborted", "failed"):
+                raise EvaluationLedgerConflictError(
+                    f"{training_run_id} attempt_{number:03d}: ledger records status="
+                    f"{ledger_row['status']!r} but no attempt directory exists -- only aborted/"
+                    f"failed attempts may have a deleted directory."
+                )
+        elif dir_status is not None and ledger_row is None:
+            if dir_status.get("status") in _FINAL_TEST_TERMINAL_STATUSES:
+                raise EvaluationLedgerConflictError(
+                    f"{training_run_id} attempt_{number:03d}: directory has terminal status "
+                    f"{dir_status.get('status')!r} but no ledger row exists -- requires explicit "
+                    f"reconciliation, not a silent retry."
+                )
+
+    matching_completed = []
+    conflicting_completed = []
+    for status in all_attempts:
+        if status.get("status") != EvaluationRunStatus.COMPLETED.value:
+            continue
+        if ledger_module.is_evaluation_canonical_ineligible(
+            status["evaluation_config_hash"], status["attempt_number"], amendments_ledger_path
+        ):
+            continue
+        if status["evaluation_config_hash"] != evaluation_config_hash:
+            conflicting_completed.append(status)
+            continue
+        attempt_dir = run_dir / f"attempt_{status['attempt_number']:03d}"
+        manifest_path = attempt_dir / "artifact_manifest.json"
+        if not manifest_path.exists():
+            raise EvaluationPersistenceError(
+                f"Completed final-test attempt_{status['attempt_number']:03d} for "
+                f"{training_run_id} is missing artifact_manifest.json."
+            )
+        import json as _json
+
+        manifest = _json.loads(manifest_path.read_text())
+        verify_final_test_artifact_manifest(attempt_dir, manifest)
+        matching_completed.append(status)
+
+    if len(matching_completed) > 1:
+        attempt_numbers = sorted(s["attempt_number"] for s in matching_completed)
+        raise AmbiguousEvaluationCompletionError(
+            f"Multiple completed, artifact-verified final-test attempts for {training_run_id} match "
+            f"evaluation_config_hash={evaluation_config_hash}: attempts {attempt_numbers}. Refusing "
+            f"to silently choose earliest/latest -- resolve via explicit reconciliation before "
+            f"proceeding."
+        )
+    if matching_completed:
+        return matching_completed[0]
+
+    if conflicting_completed:
+        attempt_numbers = sorted(s["attempt_number"] for s in conflicting_completed)
+        conflicting_hashes = sorted({s["evaluation_config_hash"] for s in conflicting_completed})
+        raise ConflictingEvaluationImplementationError(
+            f"{training_run_id} already has a COMPLETED final-test evaluation (attempt(s) "
+            f"{attempt_numbers}, evaluation_config_hash(es) {conflicting_hashes}) that does NOT match "
+            f"the current request's evaluation_config_hash={evaluation_config_hash}. Hard failure -- "
+            f"will not silently create a second, different-identity canonical completion for the "
+            f"same training run. Requires explicit reconciliation before proceeding."
+        )
+    return None
 
 
 class FinalTestAuthorizationRequiredError(RuntimeError):
@@ -273,7 +435,7 @@ def run_final_test_evaluation(
     source_commit = _git_commit_hash()
 
     # Step 6: check existing final-test attempt/ledger state (metadata only).
-    skip = check_evaluation_skip(
+    skip = check_final_test_evaluation_skip(
         run_id,
         final_test_evaluation_id,
         root,

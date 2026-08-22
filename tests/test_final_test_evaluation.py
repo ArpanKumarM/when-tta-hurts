@@ -152,7 +152,7 @@ def test_run_id_not_in_authorized_cells_stops_before_device(monkeypatch, tmp_pat
 def test_idempotent_skip_before_heavy_dependencies(monkeypatch, tmp_path):
     _patch_common(monkeypatch)
     skip_payload = {"attempt_number": 1, "status": "completed"}
-    monkeypatch.setattr(fte, "check_evaluation_skip", lambda *a, **k: skip_payload)
+    monkeypatch.setattr(fte, "check_final_test_evaluation_skip", lambda *a, **k: skip_payload)
     monkeypatch.setattr(fte, "load_and_verify_canonical_checkpoint", _raise_if_called)
 
     result = run_final_test_evaluation(
@@ -172,7 +172,7 @@ def test_idempotent_skip_before_heavy_dependencies(monkeypatch, tmp_path):
 
 def test_failure_before_test_access_records_truthful_flags(monkeypatch, tmp_path):
     _patch_common(monkeypatch)
-    monkeypatch.setattr(fte, "check_evaluation_skip", lambda *a, **k: None)
+    monkeypatch.setattr(fte, "check_final_test_evaluation_skip", lambda *a, **k: None)
     monkeypatch.setattr(fte, "select_device", lambda name: object())
 
     def _boom(*a, **k):
@@ -203,7 +203,7 @@ def test_failure_before_test_access_records_truthful_flags(monkeypatch, tmp_path
 def test_failure_after_test_access_records_truthful_flags(monkeypatch, tmp_path):
     cell, training_result, authorization = _patch_common(monkeypatch)
     monkeypatch.setattr(fte, "select_device", lambda name: object())
-    monkeypatch.setattr(fte, "check_evaluation_skip", lambda *a, **k: None)
+    monkeypatch.setattr(fte, "check_final_test_evaluation_skip", lambda *a, **k: None)
     monkeypatch.setattr(fte, "load_and_verify_canonical_checkpoint", lambda *a, **k: object())
 
     class _FakeVerification:
@@ -268,7 +268,7 @@ def test_failure_after_test_access_records_truthful_flags(monkeypatch, tmp_path)
 def test_completed_happy_path_records_all_flags_true(monkeypatch, tmp_path):
     _patch_common(monkeypatch)
     monkeypatch.setattr(fte, "select_device", lambda name: object())
-    monkeypatch.setattr(fte, "check_evaluation_skip", lambda *a, **k: None)
+    monkeypatch.setattr(fte, "check_final_test_evaluation_skip", lambda *a, **k: None)
     monkeypatch.setattr(fte, "load_and_verify_canonical_checkpoint", lambda *a, **k: object())
 
     class _FakeVerification:
