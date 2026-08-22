@@ -2140,7 +2140,16 @@ def test_real_incident_rows_unchanged_attempt_1_aborted_attempt_2_failed():
     from when_tta_hurts.ledger import is_evaluation_canonical_ineligible
 
     assert is_evaluation_canonical_ineligible(row3["evaluation_id"], 3) is True
-    assert is_evaluation_canonical_ineligible(row4["evaluation_id"], 4) is False
+    # Attempt 4 was canonical-eligible from Phase 2B.4D Part 2 (corrected
+    # metric contract) through the Block D closure commit, but is now
+    # superseded for evaluator-fingerprint uniformity (Phase 2B fingerprint
+    # reconciliation, see
+    # docs/phase2b_validation_evaluation_fingerprint_reconciliation.md) --
+    # a controlled rerun under the current fingerprint is the new canonical
+    # completion for this run_id. This is a provenance supersession, not a
+    # retraction of attempt 4's scientific validity (proven equivalent in
+    # the reconciliation doc's semantic-recomputation section).
+    assert is_evaluation_canonical_ineligible(row4["evaluation_id"], 4) is True
 
 
 def test_real_next_evaluation_attempt_number_is_monotonic_and_gapless():
@@ -2170,19 +2179,21 @@ def test_real_next_evaluation_attempt_number_is_monotonic_and_gapless():
     assert next_evaluation_attempt_number(run_id) == expected_next
 
 
-def test_real_attempt_4_is_sole_canonical_completion():
+def test_real_attempt_4_is_amendment_excluded_not_ambiguous_or_conflicting():
     """check_evaluation_skip() under attempt 4's real evaluation_config_hash
-    resolves to attempt 4 without raising AmbiguousEvaluationCompletionError
-    or ConflictingEvaluationImplementationError -- attempt 3's amendment
-    keeps it out of both the matching-completed and conflicting-completed
-    buckets."""
+    returns None (no eligible completion) rather than raising
+    AmbiguousEvaluationCompletionError or ConflictingEvaluationImplementationError.
+    Attempt 3's amendment already excluded attempt 3 from both buckets;
+    attempt 4 is now ALSO amendment-excluded (superseded for
+    evaluator-fingerprint uniformity -- see
+    docs/phase2b_validation_evaluation_fingerprint_reconciliation.md), so
+    resolution correctly falls through to "no eligible completion" instead
+    of ambiguity/conflict, and instead of stale-selecting attempt 4."""
     skip = check_evaluation_skip(
         "A-pathmnist-28px-batchnorm-policy-none-s0",
         "e59debe937108abf956f9340621f306e5af190ae445dd189bb2572361fa0a2f4",
     )
-    assert skip is not None
-    assert skip["attempt_number"] == 4
-    assert skip["status"] == "completed"
+    assert skip is None
 
 
 # ---------------------------------------------------------------------------
