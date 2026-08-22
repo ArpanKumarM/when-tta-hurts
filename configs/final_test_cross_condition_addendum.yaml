@@ -1,0 +1,132 @@
+# Phase 2B.5C -- FROZEN pre-test fixed-model cross-condition addendum.
+#
+# CLASSIFICATION (see docs/phase2b_final_test_cross_condition_addendum.md
+# for the full narrative freeze document -- this file is the *machine-
+# readable* half of the same freeze, and is loaded by
+# src/when_tta_hurts/cross_condition_addendum.py at analysis time; it is
+# NOT a runtime override surface -- there is no CLI flag, environment
+# variable, or config-merge path anywhere that can change any value below
+# without editing this file and thereby changing the analysis fingerprint
+# (this file is a member of CROSS_CONDITION_FINGERPRINT_MANIFEST).
+#
+# status: frozen
+# classification: post_validation_pre_test_secondary
+# originally_preregistered: false
+# fixed_trained_model_inference_only: true
+#
+# provenance:
+#   decision_memo: "Phase 2B.5B -- Pre-Test Statistical-Gap Adjudication Memo"
+#   engineering_task: "Phase 2B.5C -- Freeze and Implement the Pre-Test Fixed-Model Addendum"
+#   frozen_on_top_of_commit: 8d4c07e39718dbdd1bbf0ce2008594a1a65306f5
+#   frozen_on_top_of_commit_message: "feat: implement frozen Phase 2B statistical analysis runner"
+#   frozen_on_top_of_commit_date: "2026-08-22T10:15:33-04:00"
+#   validation_results_already_observed_before_this_freeze: true
+#   evidence_validation_already_closed:
+#     - "99b20be088278f21f2ddbf72007d63a12e3062c1 (results: close Phase 2B evaluator-fingerprint reconciliation)"
+#     - "0ba6f7236f9db2e19968581085fac3fa4eafdd67 (results: record Phase 2B Block D validation evaluation)"
+#   disclosure: >
+#     This addendum was specified AFTER all 39 confirmatory validation-stage
+#     cells had already completed and their evaluation ledger rows had
+#     already been committed. It must never be described as "originally
+#     preregistered" -- it is a post-validation, pre-test-specified
+#     secondary analysis. It is frozen and committed BEFORE the official
+#     test split is opened, so it is not tuned on test-set outcomes.
+
+# ---------------------------------------------------------------------------
+# Primary endpoint -- reuses the already-frozen primary TTA endpoint only.
+# No new N, aggregator, metric or threshold is introduced anywhere in this
+# addendum.
+# ---------------------------------------------------------------------------
+endpoint:
+  metric: accuracy
+  condition: naive_tta
+  aggregator: mean_probability
+  tta_view_count: 50
+  degradation_definition: "delta = accuracy_TTA50 - accuracy_clean"
+
+# ---------------------------------------------------------------------------
+# Bootstrap -- reuses docs/statistical_analysis_plan.md's frozen paired
+# bootstrap parameters (resample test samples with replacement,
+# >= 10,000 resamples, 95% CI) exactly. The only detail not already frozen
+# by the SAP is the deterministic bootstrap-seed derivation rule below,
+# which is an implementation-determinism convention (reproducibility),
+# not a new statistical choice, and is justified by a standard rule
+# unrelated to any observed result: "a bootstrap seed must be a pure,
+# collision-resistant function of the analysis's own identity, so that
+# re-running the same frozen analysis against the same frozen inputs is
+# always exactly reproducible, and so that no two distinct pairs can ever
+# accidentally share a seed."
+bootstrap:
+  n_resamples: 10000
+  ci_level: 0.95
+  resample_unit: joint_aligned_test_image_index
+  independent_resampling_of_four_arrays: forbidden
+  seed_derivation: >
+    uint64(sha256("phase2b5c_did_bootstrap_seed" || hypothesis || pair_id ||
+    analysis_fingerprint)[:8])
+
+# ---------------------------------------------------------------------------
+# Fixed-pair mappings -- mechanically derived from configs/experiment_matrix.yaml
+# at analysis time; this section records the FROZEN RULE for deriving them,
+# not a hand-typed list of run IDs.
+# ---------------------------------------------------------------------------
+h1_pairs:
+  description: "For each dataset x resolution x seed, A=BatchNorm, B=GroupNorm."
+  condition_a_normalization: batchnorm
+  condition_b_normalization: groupnorm
+  eligible_resolutions: [28, 64]
+  directionality: two_sided
+  pool_seeds: false
+  pool_datasets: false
+  pool_resolutions: false
+  general_method_level_verdict: forbidden
+
+h2_pairs:
+  description: "For each dataset x normalization x seed, A=28px, B=64px."
+  condition_a_resolution: 28
+  condition_b_resolution: 64
+  eligible_normalizations: [batchnorm, groupnorm]
+  directionality: one_sided
+  positive_direction_meaning: degradation_reduced_at_higher_resolution
+  block_d_128px_included_in_inference: false
+  block_d_128px_role: trend_only_descriptive
+  requires_proven_sample_index_alignment_across_resolutions: true
+  pool_seeds: false
+  pool_datasets: false
+  pool_normalizations: false
+  general_method_level_verdict: forbidden
+
+h3_pairs:
+  description: "For each dataset x seed at 28px BatchNorm, A=unmatched Block A, B=matched Block B."
+  condition_a_block: A_core_normalization_resolution
+  condition_a_training_policy: none
+  condition_b_block: B_policy_matching
+  condition_b_training_policy: matched_to_approved_tta_policy
+  eligible_resolution: 28
+  eligible_normalization: batchnorm
+  directionality: one_sided
+  positive_direction_meaning: matched_policy_reduces_degradation
+  pool_seeds: false
+  pool_datasets: false
+  general_method_level_verdict: forbidden
+
+# ---------------------------------------------------------------------------
+# Reporting rules -- structural, not statistical.
+# ---------------------------------------------------------------------------
+reporting:
+  classification_label: post_validation_pre_test_secondary
+  display_all_eligible_pairs: true
+  display_only_pairs_excluding_zero: false
+  produce_model_population_p_value: false
+  produce_seed_level_sign_or_permutation_test: false
+  fit_mixed_effects_or_hierarchical_model: false
+  simultaneous_family_wise_coverage_claimed: false
+  permitted_wording: >
+    "For this fixed pair of trained models, evaluated on unseen test
+    samples, the estimated difference in TTA degradation was X (95% CI:
+    [lo, hi])."
+  forbidden_wording:
+    - "BatchNorm and GroupNorm differ in general."
+    - "Higher resolution reduces TTA harm in general."
+    - "Matched augmentation universally prevents TTA harm."
+    - "The result generalizes over retraining randomness."
