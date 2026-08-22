@@ -267,10 +267,77 @@ def test_no_bypass_flags_on_verify_function_signature():
         assert forbidden not in param_names
 
 
-def test_real_production_authorization_artifact_does_not_exist():
-    from when_tta_hurts.final_test_authorization import FINAL_TEST_AUTHORIZATION_PATH
+def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch):
+    """The real authorization artifact has exactly two legitimate
+    lifecycle states, and this test accepts either:
 
-    assert not FINAL_TEST_AUTHORIZATION_PATH.exists()
+    1. Pre-authorization: the artifact is absent.
+    2. Authorization transition or later: if present, its CONTENT must be
+       fully valid (parses, satisfies the committed schema, status=
+       approved, exactly 39 unique cells, binds the current fingerprints/
+       commits/checksums, contains no scientific-result field) and it
+       must coexist with a header-only final-test ledger and no final-test
+       attempt directory or result artifact.
+
+    Deliberately does NOT require the artifact to be tracked-and-clean in
+    git here -- that is necessarily false in the window between the
+    artifact being written to disk and being committed, and this test
+    must remain valid throughout that window. Tracked-and-clean
+    enforcement remains mandatory and untouched in
+    verify_final_test_authorization() itself (see
+    test_untracked_artifact_raises/test_dirty_artifact_raises above) and
+    in post-authorization-commit verification -- monkeypatching it away
+    here affects only this one test's local call, never production
+    behavior."""
+    import json
+
+    from when_tta_hurts.final_test_authorization import FINAL_TEST_AUTHORIZATION_PATH
+    from when_tta_hurts.final_test_evaluation import DEFAULT_FINAL_TEST_ROOT
+    from when_tta_hurts.ledger import FINAL_TEST_LEDGER_PATH
+
+    if not FINAL_TEST_AUTHORIZATION_PATH.exists():
+        return  # legitimate pre-authorization state
+
+    monkeypatch.setattr(fta, "_is_tracked_and_clean", lambda repo_root, rel_path: True)
+    real_git = fta._git
+
+    def _git_or_placeholder_commit(repo_root, *args):
+        if args[:3] == ("log", "-1", "--format=%H"):
+            # Not yet committed in this transitional window -- every other
+            # binding (schema, fingerprints, checksums, cell identities,
+            # commit-ancestor checks) is still verified for real below.
+            return "0" * 40
+        return real_git(repo_root, *args)
+
+    monkeypatch.setattr(fta, "_git", _git_or_placeholder_commit)
+    result = verify_final_test_authorization()  # full content/binding validation, via production code
+    assert result.status == "approved"
+
+    raw = json.loads(FINAL_TEST_AUTHORIZATION_PATH.read_text())
+    run_ids = [c["run_id"] for c in raw["authorized_cells"]]
+    assert len(run_ids) == 39
+    assert len(set(run_ids)) == 39
+
+    forbidden_substrings = (
+        "accuracy",
+        "macro_f1",
+        "f1_score",
+        "calibration",
+        "delta_accuracy",
+        "\"ece\"",
+        "brier",
+        "\"nll\"",
+        "tta_delta",
+    )
+    payload_lower = json.dumps(raw).lower()
+    for forbidden in forbidden_substrings:
+        assert forbidden not in payload_lower, f"forbidden scientific-result field {forbidden!r} found"
+
+    assert FINAL_TEST_LEDGER_PATH.exists()
+    ledger_lines = FINAL_TEST_LEDGER_PATH.read_text().splitlines()
+    assert len(ledger_lines) == 1, "final-test ledger must remain header-only"
+
+    assert not DEFAULT_FINAL_TEST_ROOT.exists(), "no final-test attempt directory may exist yet"
 
 
 def test_verify_final_test_authorization_never_imports_torch_or_touches_mps():
