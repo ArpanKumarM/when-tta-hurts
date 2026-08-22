@@ -712,3 +712,152 @@ def is_evaluation_canonical_ineligible(
             if not eligible:
                 return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.6A: final-test-evaluation ledger. Structurally separate from
+# VALIDATION_EVALUATION_LEDGER_PATH (never mixed) -- keyed the same way
+# ("training_run_id" / "evaluation_attempt" / "evaluation_config_hash") so
+# validation_evaluation.py's generic, split-agnostic attempt-lifecycle
+# helpers (evaluation_run_directory, next_evaluation_attempt_number,
+# start_evaluation_attempt, finish_evaluation_attempt, check_evaluation_skip)
+# can be reused UNCHANGED for the final-test path by passing this ledger's
+# path and a disjoint root directory (artifacts/final_test/), rather than
+# forking that lifecycle logic. Header-only during Phase 2B.6A engineering
+# -- no row is ever appended by this task or by this repository's tests
+# against the real path.
+# ---------------------------------------------------------------------------
+
+FINAL_TEST_LEDGER_PATH = Path("artifacts/ledger_final_test.csv")
+
+FINAL_TEST_LEDGER_FIELDNAMES: tuple[str, ...] = (
+    "confirmatory",
+    "final_test_evaluation_id",
+    "training_run_id",
+    "training_attempt",
+    "checkpoint_hash",
+    "evaluation_config_hash",
+    "evaluation_attempt",
+    "split",
+    "evaluator_fingerprint",
+    "statistical_analysis_fingerprint",
+    "cross_condition_analysis_fingerprint",
+    "final_test_runner_fingerprint",
+    "authorization_artifact_sha256",
+    "authorization_commit",
+    "test_split_accessed",
+    "test_predictions_computed",
+    "test_metrics_computed",
+    "test_metrics_persisted",
+    "test_metrics_observed",
+    "status",
+    "failure_stage",
+    "failure_reason",
+    "primary_artifact_hash",
+    "started_at",
+    "ended_at",
+    "runtime_seconds",
+)
+
+
+def ensure_final_test_ledger_exists(ledger_path: str | Path = FINAL_TEST_LEDGER_PATH) -> bool:
+    """Create a HEADER-ONLY final-test ledger file if it does not already
+    exist. Writes NO data row. Returns True if created, False if it
+    already existed (no-op)."""
+    path = Path(ledger_path)
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(FINAL_TEST_LEDGER_FIELDNAMES))
+        writer.writeheader()
+    return True
+
+
+def append_final_test_entry(
+    *,
+    final_test_evaluation_id: str,
+    training_run_id: str,
+    training_attempt: int,
+    checkpoint_hash: str,
+    evaluation_config_hash: str,
+    evaluation_attempt: int,
+    evaluator_fingerprint: str,
+    statistical_analysis_fingerprint: str,
+    cross_condition_analysis_fingerprint: str,
+    final_test_runner_fingerprint: str,
+    authorization_artifact_sha256: str,
+    authorization_commit: str,
+    test_split_accessed: bool,
+    test_predictions_computed: bool,
+    test_metrics_computed: bool,
+    test_metrics_persisted: bool,
+    test_metrics_observed: bool,
+    status: str,
+    primary_artifact_hash: str,
+    started_at: float,
+    ended_at: float,
+    runtime_seconds: float,
+    failure_stage: str = "",
+    failure_reason: str = "",
+    ledger_path: str | Path = FINAL_TEST_LEDGER_PATH,
+) -> str:
+    """Append one final-test-evaluation row. `split` is hardcoded to
+    "test" and `confirmatory` to True -- neither is caller-overridable, so
+    this function cannot be used to record anything other than a genuine
+    confirmatory final-test evaluation. Every lifecycle/access flag is a
+    REQUIRED keyword argument (no default), forcing every caller to state
+    truthfully how far the attempt actually got -- "not persisted" is
+    never silently conflated with "not accessed" (test_split_accessed and
+    test_metrics_observed can each independently be True on a FAILED row).
+
+    Idempotency: keyed on (final_test_evaluation_id, evaluation_attempt) --
+    identical duplicate -> "duplicate_ignored"; conflicting duplicate ->
+    hard failure (LedgerConflictError), exactly like
+    append_evaluation_entry()."""
+    row = {
+        "confirmatory": True,
+        "final_test_evaluation_id": final_test_evaluation_id,
+        "training_run_id": training_run_id,
+        "training_attempt": training_attempt,
+        "checkpoint_hash": checkpoint_hash,
+        "evaluation_config_hash": evaluation_config_hash,
+        "evaluation_attempt": evaluation_attempt,
+        "split": "test",
+        "evaluator_fingerprint": evaluator_fingerprint,
+        "statistical_analysis_fingerprint": statistical_analysis_fingerprint,
+        "cross_condition_analysis_fingerprint": cross_condition_analysis_fingerprint,
+        "final_test_runner_fingerprint": final_test_runner_fingerprint,
+        "authorization_artifact_sha256": authorization_artifact_sha256,
+        "authorization_commit": authorization_commit,
+        "test_split_accessed": test_split_accessed,
+        "test_predictions_computed": test_predictions_computed,
+        "test_metrics_computed": test_metrics_computed,
+        "test_metrics_persisted": test_metrics_persisted,
+        "test_metrics_observed": test_metrics_observed,
+        "status": status,
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+        "primary_artifact_hash": primary_artifact_hash,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "runtime_seconds": runtime_seconds,
+    }
+    row_str = {k: str(v) for k, v in row.items()}
+
+    existing_rows = _read_existing_rows(ledger_path)
+    for existing in existing_rows:
+        if existing.get("final_test_evaluation_id") == final_test_evaluation_id and existing.get(
+            "evaluation_attempt"
+        ) == str(evaluation_attempt):
+            if existing == row_str:
+                return "duplicate_ignored"
+            raise LedgerConflictError(
+                f"Final-test ledger already has a DIFFERENT row for "
+                f"final_test_evaluation_id={final_test_evaluation_id}, "
+                f"evaluation_attempt={evaluation_attempt}. Existing: {existing}. New: {row_str}. "
+                f"Hard failure -- refusing to append a conflicting duplicate."
+            )
+
+    append_ledger_row(row, ledger_path)
+    return "appended"

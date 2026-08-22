@@ -1,9 +1,12 @@
 """Static analysis test: allow_test=True must never appear as an actual
 call-site argument anywhere in the codebase except inside a function that
-also calls verify_authorization() -- the guarded final-evaluation path.
-Uses Python's `ast` module so docstrings/comments (which legitimately
-mention "allow_test=True" for documentation purposes) are never
-misdetected as real call sites.
+also calls verify_authorization() or verify_final_test_authorization() --
+the two independent guarded final-evaluation paths (Phase 2B.2's
+Validation-Gated TTA gate and Phase 2B.6A's 39-cell final-test gate,
+respectively -- neither can substitute for the other, but either is an
+acceptable guard for this static check). Uses Python's `ast` module so
+docstrings/comments (which legitimately mention "allow_test=True" for
+documentation purposes) are never misdetected as real call sites.
 """
 
 from __future__ import annotations
@@ -38,14 +41,17 @@ def _find_allow_test_true_calls(tree: ast.AST) -> list[ast.FunctionDef]:
     return hits
 
 
+_ACCEPTABLE_GUARD_NAMES = {"verify_authorization", "verify_final_test_authorization"}
+
+
 def _function_calls_verify_authorization(func_node: ast.FunctionDef | None) -> bool:
     if func_node is None:
         return False
     for node in ast.walk(func_node):
         if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id == "verify_authorization":
+            if isinstance(node.func, ast.Name) and node.func.id in _ACCEPTABLE_GUARD_NAMES:
                 return True
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "verify_authorization":
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _ACCEPTABLE_GUARD_NAMES:
                 return True
     return False
 
@@ -62,22 +68,28 @@ def test_no_unguarded_allow_test_true_call_sites():
                     )
 
     assert violations == [], (
-        f"Found allow_test=True call site(s) NOT guarded by a verify_authorization() "
-        f"call in the same function: {violations}"
+        f"Found allow_test=True call site(s) NOT guarded by a verify_authorization()/"
+        f"verify_final_test_authorization() call in the same function: {violations}"
     )
 
 
-def test_currently_zero_allow_test_true_call_sites_at_all():
-    """As of Phase 2B.2, no code anywhere actually calls allow_test=True --
-    this is the strongest current state (stronger than merely 'guarded').
-    If this test starts failing because a real guarded call site was added,
-    that's expected to require deliberate review, not a silent pass."""
+def test_exactly_one_allow_test_true_call_site_reviewed_phase_2b_6a():
+    """As of Phase 2B.2, no code anywhere called allow_test=True -- the
+    strongest possible state. Phase 2B.6A deliberately adds exactly ONE
+    real, guarded call site: evaluation/test_loader.py's
+    load_final_test_split(), the sole final-test-only loader for the
+    39-cell confirmatory matrix, guarded by
+    verify_final_test_authorization() (see test_no_unguarded_allow_test_true_call_sites
+    above). This is the "deliberate review, not a silent pass" this test's
+    predecessor anticipated -- if this count ever changes again, that
+    again requires deliberate review, not a silent edit of the expected
+    number."""
     total = 0
     for root in SCAN_ROOTS:
         for py_file in root.rglob("*.py"):
             tree = ast.parse(py_file.read_text(), filename=str(py_file))
             total += len(_find_allow_test_true_calls(tree))
-    assert total == 0
+    assert total == 1
 
 
 def test_load_pilot_split_structurally_cannot_reach_test():

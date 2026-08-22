@@ -32,6 +32,19 @@ artifacts/*
 # detailed raw benchmark timing dump it's derived from (artifacts/benchmarks/,
 # which stays ignored).
 !artifacts/block_d_gate_decision.json
+# Phase 2B.6A final-test-evaluation ledger -- same append-only, human-
+# auditable-CSV rationale as the ledgers above. Committed header-only
+# during this engineering phase (no final-test evaluation has run yet).
+# artifacts/final_test/ (per-attempt predictions/metrics/status files)
+# stays ignored, same as artifacts/validation_evaluation/.
+!artifacts/ledger_final_test.csv
+# The final-test authorization artifact must be committed and tracked
+# (its own tracked-and-clean-in-git state is part of what
+# verify_final_test_authorization() checks) -- explicitly excepted here so
+# a future, separately-authorized approval can be added with a normal
+# `git add`, never a force-add workaround. Does NOT exist yet: creating it
+# is explicitly out of scope for Phase 2B.6A engineering.
+!artifacts/final_test_authorization.json
 
 # Python
 __pycache__/
