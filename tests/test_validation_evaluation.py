@@ -2179,21 +2179,27 @@ def test_real_next_evaluation_attempt_number_is_monotonic_and_gapless():
     assert next_evaluation_attempt_number(run_id) == expected_next
 
 
-def test_real_attempt_4_is_amendment_excluded_not_ambiguous_or_conflicting():
-    """check_evaluation_skip() under attempt 4's real evaluation_config_hash
-    returns None (no eligible completion) rather than raising
-    AmbiguousEvaluationCompletionError or ConflictingEvaluationImplementationError.
-    Attempt 3's amendment already excluded attempt 3 from both buckets;
-    attempt 4 is now ALSO amendment-excluded (superseded for
-    evaluator-fingerprint uniformity -- see
-    docs/phase2b_validation_evaluation_fingerprint_reconciliation.md), so
-    resolution correctly falls through to "no eligible completion" instead
-    of ambiguity/conflict, and instead of stale-selecting attempt 4."""
-    skip = check_evaluation_skip(
-        "A-pathmnist-28px-batchnorm-policy-none-s0",
-        "e59debe937108abf956f9340621f306e5af190ae445dd189bb2572361fa0a2f4",
-    )
-    assert skip is None
+def test_real_attempt_4_is_amendment_excluded_never_silently_reselected():
+    """Attempt 4 of A-pathmnist-28px-batchnorm-policy-none-s0 is amendment-
+    excluded (superseded for evaluator-fingerprint uniformity -- see
+    docs/phase2b_validation_evaluation_fingerprint_reconciliation.md, and
+    before that, Phase 2B.4D's metric-contract incident for attempt 3).
+    check_evaluation_skip() under attempt 4's real evaluation_config_hash
+    must NEVER silently resolve back to attempt 4 itself -- whether that
+    manifests as returning None (no other completion exists yet) or as
+    raising Ambiguous/ConflictingEvaluationImplementationError (a
+    different-identity current-fingerprint completion already exists, as
+    is the real case after the Phase 2B fingerprint-reconciliation reruns)
+    depends on what else is in the real ledger at test time, which this
+    test deliberately does not hardcode -- only the invariant that
+    attempt 4 is never the resolved completion is checked."""
+    run_id = "A-pathmnist-28px-batchnorm-policy-none-s0"
+    old_eval_id = "e59debe937108abf956f9340621f306e5af190ae445dd189bb2572361fa0a2f4"
+    try:
+        skip = check_evaluation_skip(run_id, old_eval_id)
+    except (AmbiguousEvaluationCompletionError, ConflictingEvaluationImplementationError):
+        return  # expected once a different-identity current completion exists
+    assert skip is None or skip["attempt_number"] != 4
 
 
 # ---------------------------------------------------------------------------
