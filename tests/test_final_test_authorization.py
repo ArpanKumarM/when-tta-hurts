@@ -8,6 +8,7 @@ artifact or the real 39-cell matrix's real ledger state.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import subprocess
 
@@ -88,8 +89,11 @@ def _patch_identity(monkeypatch, *, cells=None, training_by_run_id=None):
     )
 
 
-def _valid_content(repo, cells=("run-a",), training_attempt=1, checkpoint_hash="chk-a"):
+def _valid_content(
+    repo, cells=("run-a",), training_attempt=1, checkpoint_hash="chk-a", authorized_final_test_attempt=1
+):
     return {
+        "schema_version": "phase2b.6d-v2",
         "status": "approved",
         "approval_timestamp": "2026-09-01T00:00:00Z",
         "phase2b_protocol_commit": _bound_commit(repo),
@@ -101,7 +105,12 @@ def _valid_content(repo, cells=("run-a",), training_attempt=1, checkpoint_hash="
         "final_test_runner_fingerprint": _FAKE_RUNNER_FP,
         "official_dataset_checksums": {"pathmnist@28": _FAKE_DATASET_CHECKSUM},
         "authorized_cells": [
-            {"run_id": run_id, "training_attempt": training_attempt, "checkpoint_hash": checkpoint_hash}
+            {
+                "run_id": run_id,
+                "training_attempt": training_attempt,
+                "checkpoint_hash": checkpoint_hash,
+                "authorized_final_test_attempt": authorized_final_test_attempt,
+            }
             for run_id in cells
         ],
     }
@@ -263,7 +272,17 @@ def test_no_bypass_flags_on_verify_function_signature():
 
     sig = inspect.signature(verify_final_test_authorization)
     param_names = set(sig.parameters.keys())
-    assert param_names == {"artifact_path", "matrix_path", "repo_root"}
+    # final_test_root/final_test_ledger_path are injectable PATHS for
+    # synthetic testing (mirroring repo_root's existing pattern) -- never
+    # a force/override/skip/unlock/bypass mechanism; every check that
+    # reads them still runs unconditionally.
+    assert param_names == {
+        "artifact_path",
+        "matrix_path",
+        "repo_root",
+        "final_test_root",
+        "final_test_ledger_path",
+    }
     for forbidden in ("force", "override", "skip", "unlock", "bypass", "env"):
         assert forbidden not in param_names
 
@@ -382,3 +401,307 @@ def test_verify_final_test_authorization_never_imports_torch_or_touches_mps():
     assert "select_device" not in source
     assert "np.load" not in source
     assert "predictions.npz" not in source
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.6D: schema/version 2 -- exact-attempt binding and supersession
+# ---------------------------------------------------------------------------
+
+
+def _valid_content_v2_with_attempts(repo, attempts_by_run_id, cells=None):
+    cells = cells if cells is not None else list(attempts_by_run_id.keys())
+    content = _valid_content(repo, cells=cells)
+    for entry in content["authorized_cells"]:
+        entry["authorized_final_test_attempt"] = attempts_by_run_id[entry["run_id"]]
+    return content
+
+
+def test_old_schema_v1_rejected_after_supersession(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    content = _valid_content(repo)
+    del content["schema_version"]
+    content["schema_version"] = "phase2b.6b-v1"
+    for entry in content["authorized_cells"]:
+        del entry["authorized_final_test_attempt"]
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="schema_version"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def test_missing_authorized_final_test_attempt_field_rejected(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    content = _valid_content(repo)
+    del content["authorized_cells"][0]["authorized_final_test_attempt"]
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="missing field"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def test_affected_cell_attempt_2_accepted_when_prior_attempt_1_reconciled(tmp_path, monkeypatch):
+    """The affected cell already has a reconciled (ledgered, terminal)
+    attempt 1 on disk -- authorizing attempt 2 for it must be accepted."""
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch, cells=[_FakeCell("run-a")])
+    final_test_root = tmp_path / "final_test"
+    ledger_path = tmp_path / "ledger.csv"
+    (final_test_root / "run-a" / "attempt_001").mkdir(parents=True)
+    (final_test_root / "run-a" / "attempt_001" / "status.json").write_text(
+        json.dumps(
+            {
+                "training_run_id": "run-a",
+                "attempt_number": 1,
+                "status": "aborted",
+                "evaluation_config_hash": "old-hash",
+                "started_at": 1.0,
+                "ended_at": 2.0,
+                "failure_reason": "incident",
+            }
+        )
+    )
+    from when_tta_hurts.ledger import append_final_test_entry, ensure_final_test_ledger_exists
+
+    ensure_final_test_ledger_exists(ledger_path)
+    append_final_test_entry(
+        ledger_path=ledger_path,
+        final_test_evaluation_id="old-hash",
+        training_run_id="run-a",
+        training_attempt=1,
+        checkpoint_hash="chk-a",
+        evaluation_config_hash="old-hash",
+        evaluation_attempt=1,
+        evaluator_fingerprint=_FAKE_EVALUATOR_FP,
+        statistical_analysis_fingerprint=_FAKE_ANALYSIS_FP,
+        cross_condition_analysis_fingerprint=_FAKE_CROSS_FP,
+        final_test_runner_fingerprint=_FAKE_RUNNER_FP,
+        authorization_artifact_sha256="old-auth-sha",
+        authorization_commit="old-auth-commit",
+        test_split_accessed=True,
+        test_predictions_computed="",
+        test_metrics_computed="",
+        test_metrics_persisted=False,
+        test_metrics_observed="",
+        status="aborted",
+        primary_artifact_hash="",
+        started_at=1.0,
+        ended_at="",
+        runtime_seconds="",
+        failure_stage="unknown_externally_terminated",
+        failure_reason="incident",
+    )
+
+    content = _valid_content_v2_with_attempts(repo, {"run-a": 2})
+    _write_and_commit(repo, content)
+    result = verify_final_test_authorization(
+        artifact_path="final_test_authorization.json",
+        repo_root=repo,
+        final_test_root=final_test_root,
+        final_test_ledger_path=ledger_path,
+    )
+    assert result.authorized_cells_by_run_id["run-a"]["authorized_final_test_attempt"] == 2
+
+
+def test_affected_cell_attempt_1_rejected_when_prior_attempt_1_reconciled(tmp_path, monkeypatch):
+    """Same fixture as above, but authorizing attempt 1 (instead of 2) for
+    the already-reconciled cell must be rejected."""
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch, cells=[_FakeCell("run-a")])
+    final_test_root = tmp_path / "final_test"
+    ledger_path = tmp_path / "ledger.csv"
+    (final_test_root / "run-a" / "attempt_001").mkdir(parents=True)
+    (final_test_root / "run-a" / "attempt_001" / "status.json").write_text(
+        json.dumps(
+            {
+                "training_run_id": "run-a",
+                "attempt_number": 1,
+                "status": "aborted",
+                "evaluation_config_hash": "old-hash",
+                "started_at": 1.0,
+                "ended_at": 2.0,
+                "failure_reason": "incident",
+            }
+        )
+    )
+    from when_tta_hurts.ledger import append_final_test_entry, ensure_final_test_ledger_exists
+
+    ensure_final_test_ledger_exists(ledger_path)
+    append_final_test_entry(
+        ledger_path=ledger_path,
+        final_test_evaluation_id="old-hash",
+        training_run_id="run-a",
+        training_attempt=1,
+        checkpoint_hash="chk-a",
+        evaluation_config_hash="old-hash",
+        evaluation_attempt=1,
+        evaluator_fingerprint=_FAKE_EVALUATOR_FP,
+        statistical_analysis_fingerprint=_FAKE_ANALYSIS_FP,
+        cross_condition_analysis_fingerprint=_FAKE_CROSS_FP,
+        final_test_runner_fingerprint=_FAKE_RUNNER_FP,
+        authorization_artifact_sha256="old-auth-sha",
+        authorization_commit="old-auth-commit",
+        test_split_accessed=True,
+        test_predictions_computed="",
+        test_metrics_computed="",
+        test_metrics_persisted=False,
+        test_metrics_observed="",
+        status="aborted",
+        primary_artifact_hash="",
+        started_at=1.0,
+        ended_at="",
+        runtime_seconds="",
+        failure_stage="unknown_externally_terminated",
+        failure_reason="incident",
+    )
+
+    content = _valid_content_v2_with_attempts(repo, {"run-a": 1})  # WRONG: should be 2
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="authorized_final_test_attempt"):
+        verify_final_test_authorization(
+            artifact_path="final_test_authorization.json",
+            repo_root=repo,
+            final_test_root=final_test_root,
+            final_test_ledger_path=ledger_path,
+        )
+
+
+def test_affected_cell_attempt_3_rejected(tmp_path, monkeypatch):
+    """Authorizing attempt 3 for a cell that has never had any attempt
+    (next allocatable is 1) must be rejected -- no automatic skip-ahead."""
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch, cells=[_FakeCell("run-a")])
+    content = _valid_content_v2_with_attempts(repo, {"run-a": 3})
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="authorized_final_test_attempt"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def test_unaffected_cell_attempt_1_accepted(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(
+        monkeypatch,
+        cells=[_FakeCell("run-b")],
+        training_by_run_id={"run-b": _FakeTrainingResult(1, "chk-a")},
+    )
+    content = _valid_content_v2_with_attempts(repo, {"run-b": 1})
+    _write_and_commit(repo, content)
+    result = verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+    assert result.authorized_cells_by_run_id["run-b"]["authorized_final_test_attempt"] == 1
+
+
+def test_unaffected_cell_attempt_2_rejected(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(
+        monkeypatch,
+        cells=[_FakeCell("run-b")],
+        training_by_run_id={"run-b": _FakeTrainingResult(1, "chk-a")},
+    )
+    content = _valid_content_v2_with_attempts(repo, {"run-b": 2})
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="authorized_final_test_attempt"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def _write_and_commit_old_authorization(repo, content):
+    """Commit `content` at the REAL authorization path, as an earlier
+    commit that a later commit will overwrite -- standing in for 'the
+    actual previous authorization commit' the new one claims to
+    supersede."""
+    path = repo / "final_test_authorization.json"
+    path.write_text(json.dumps(content))
+    _git(repo, "add", "final_test_authorization.json")
+    _git(repo, "commit", "-q", "-m", "old authorization")
+    out = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    )
+    return out.stdout.strip()
+
+
+def test_supersession_wrong_old_hash_rejected(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    old_content = {"old": "content"}
+    old_commit = _write_and_commit_old_authorization(repo, old_content)
+
+    content = _valid_content(repo)
+    content.update(
+        supersedes_authorization_sha256="0" * 64,  # WRONG -- does not match old_content's real hash
+        supersedes_authorization_commit=old_commit,
+        incident_record_commit=_bound_commit(repo),
+        recovery_policy_commit=_bound_commit(repo),
+        no_further_retry=True,
+    )
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="does not match the actual content"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def test_supersession_missing_provenance_field_rejected(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    content = _valid_content(repo)
+    content["supersedes_authorization_sha256"] = "abc"  # only one of five supersession fields present
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="all-or-nothing"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def test_supersession_non_ancestor_incident_commit_rejected(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    old_content = {"old": "content"}
+    old_commit = _write_and_commit_old_authorization(repo, old_content)
+    old_sha256 = hashlib.sha256(json.dumps(old_content).encode()).hexdigest()
+
+    content = _valid_content(repo)
+    content.update(
+        supersedes_authorization_sha256=old_sha256,
+        supersedes_authorization_commit=old_commit,
+        incident_record_commit="0" * 40,  # not a real ancestor commit
+        recovery_policy_commit=_bound_commit(repo),
+        no_further_retry=True,
+    )
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="not an ancestor of HEAD"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+
+
+def test_supersession_valid_chain_accepted(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    old_content = {"old": "content"}
+    old_commit = _write_and_commit_old_authorization(repo, old_content)
+    old_sha256 = hashlib.sha256(json.dumps(old_content).encode()).hexdigest()
+
+    content = _valid_content(repo)
+    content.update(
+        supersedes_authorization_sha256=old_sha256,
+        supersedes_authorization_commit=old_commit,
+        incident_record_commit=_bound_commit(repo),
+        recovery_policy_commit=_bound_commit(repo),
+        no_further_retry=True,
+    )
+    _write_and_commit(repo, content)
+    result = verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)
+    assert result.supersedes_authorization_commit == old_commit
+    assert result.no_further_retry is True
+
+
+def test_supersession_no_further_retry_must_be_true(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _patch_identity(monkeypatch)
+    old_content = {"old": "content"}
+    old_commit = _write_and_commit_old_authorization(repo, old_content)
+    old_sha256 = hashlib.sha256(json.dumps(old_content).encode()).hexdigest()
+
+    content = _valid_content(repo)
+    content.update(
+        supersedes_authorization_sha256=old_sha256,
+        supersedes_authorization_commit=old_commit,
+        incident_record_commit=_bound_commit(repo),
+        recovery_policy_commit=_bound_commit(repo),
+        no_further_retry=False,  # WRONG
+    )
+    _write_and_commit(repo, content)
+    with pytest.raises(FinalTestAuthorizationError, match="no_further_retry"):
+        verify_final_test_authorization(artifact_path="final_test_authorization.json", repo_root=repo)

@@ -27,6 +27,7 @@ structural belt-and-suspenders guarantee).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
@@ -41,12 +42,32 @@ from when_tta_hurts.matrix import parse_and_validate_matrix
 from when_tta_hurts.statistical_analysis import compute_analysis_fingerprint
 from when_tta_hurts.validation_evaluation import (
     compute_evaluator_fingerprint,
+    next_evaluation_attempt_number,
     resolve_canonical_training_completion,
 )
 
 FINAL_TEST_AUTHORIZATION_PATH = Path("artifacts/final_test_authorization.json")
 
+# Duplicated (not imported) from final_test_evaluation.py to avoid a
+# circular import -- final_test_evaluation.py imports FROM this module.
+# Both must remain "artifacts/final_test"; a test-only mismatch here
+# would be caught immediately by test_final_test_authorization.py's own
+# real-repo-state tests.
+_DEFAULT_FINAL_TEST_ROOT = Path("artifacts/final_test")
+
+# Phase 2B.6D: schema/version 2 adds exact per-cell final-test attempt
+# binding (authorized_cells[i].authorized_final_test_attempt) and an
+# optional supersession block, used when a new authorization replaces an
+# earlier one (e.g. after a runner-code fix following
+# docs/phase2b_final_test_accidental_access_incident.md). Schema v1
+# ("phase2b.6b-v1") authorizations are no longer accepted -- they lack
+# per-cell attempt binding entirely, so they cannot express "attempt 2
+# only for the affected cell, attempt 1 only for every other cell" and
+# must never silently authorize execution after supersession.
+_SUPPORTED_SCHEMA_VERSIONS = frozenset({"phase2b.6d-v2"})
+
 _REQUIRED_KEYS = {
+    "schema_version",
     "status",
     "approval_timestamp",
     "phase2b_protocol_commit",
@@ -59,6 +80,22 @@ _REQUIRED_KEYS = {
     "official_dataset_checksums",
     "authorized_cells",
 }
+
+_REQUIRED_CELL_KEYS = {"run_id", "training_attempt", "checkpoint_hash", "authorized_final_test_attempt"}
+
+# If ANY of these supersession keys is present, ALL of them must be
+# present (all-or-nothing) and are fully verified -- a schema-v2
+# authorization that supersedes nothing (a hypothetical future first-ever
+# v2 authorization with no prior incident) may omit the entire block.
+_SUPERSESSION_KEYS = frozenset(
+    {
+        "supersedes_authorization_sha256",
+        "supersedes_authorization_commit",
+        "incident_record_commit",
+        "recovery_policy_commit",
+        "no_further_retry",
+    }
+)
 
 
 class FinalTestAuthorizationError(RuntimeError):
@@ -74,6 +111,7 @@ class FinalTestAuthorizationError(RuntimeError):
 @dataclass(frozen=True)
 class FinalTestAuthorization:
     status: str
+    schema_version: str
     approval_timestamp: str
     phase2b_protocol_commit: str
     matrix_commit: str
@@ -85,6 +123,11 @@ class FinalTestAuthorization:
     authorized_cells_by_run_id: dict[str, dict[str, Any]]
     artifact_sha256: str
     authorization_commit: str
+    supersedes_authorization_sha256: str | None
+    supersedes_authorization_commit: str | None
+    incident_record_commit: str | None
+    recovery_policy_commit: str | None
+    no_further_retry: bool | None
 
 
 def _git(repo_root: str | Path, *args: str) -> str:
@@ -119,10 +162,29 @@ def _is_ancestor_of_head(repo_root: str | Path, commit: str) -> bool:
         return False
 
 
+def _historical_blob_sha256(repo_root: str | Path, commit: str, rel_path: str) -> str:
+    """SHA-256 of `rel_path`'s content AT `commit` (via `git show`), so a
+    superseding authorization's claimed supersedes_authorization_sha256
+    can be checked against the REAL historical content, not a
+    caller-asserted value. Raises FinalTestAuthorizationError if the
+    commit/path cannot be resolved."""
+    try:
+        content = subprocess.check_output(
+            ["git", "-C", str(repo_root), "show", f"{commit}:{rel_path}"], stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError as e:
+        raise FinalTestAuthorizationError(
+            f"Could not read {rel_path} at commit {commit} to verify supersession -- {e}"
+        ) from e
+    return hashlib.sha256(content).hexdigest()
+
+
 def verify_final_test_authorization(
     artifact_path: str | Path = FINAL_TEST_AUTHORIZATION_PATH,
     matrix_path: str = "configs/experiment_matrix.yaml",
     repo_root: str | Path = ".",
+    final_test_root: str | Path = _DEFAULT_FINAL_TEST_ROOT,
+    final_test_ledger_path: str | Path | None = None,
 ) -> FinalTestAuthorization:
     """Verify the final-test authorization artifact. Raises
     FinalTestAuthorizationError on ANY problem: missing file, untracked,
@@ -174,6 +236,49 @@ def verify_final_test_authorization(
         raise FinalTestAuthorizationError(
             f"Authorization artifact status is {raw['status']!r}, not 'approved'."
         )
+
+    if raw["schema_version"] not in _SUPPORTED_SCHEMA_VERSIONS:
+        raise FinalTestAuthorizationError(
+            f"Authorization schema_version {raw['schema_version']!r} is not supported "
+            f"(supported: {sorted(_SUPPORTED_SCHEMA_VERSIONS)}). An older schema cannot silently "
+            f"authorize execution after supersession -- see "
+            f"docs/phase2b_final_test_incident_recovery_freeze.md."
+        )
+
+    present_supersession_keys = _SUPERSESSION_KEYS & set(raw.keys())
+    if present_supersession_keys and present_supersession_keys != _SUPERSESSION_KEYS:
+        raise FinalTestAuthorizationError(
+            f"Supersession fields must be all-or-nothing; found only "
+            f"{sorted(present_supersession_keys)}, missing "
+            f"{sorted(_SUPERSESSION_KEYS - present_supersession_keys)}."
+        )
+    has_supersession = present_supersession_keys == _SUPERSESSION_KEYS
+    if has_supersession:
+        old_commit = raw["supersedes_authorization_commit"]
+        old_sha256 = raw["supersedes_authorization_sha256"]
+        incident_commit = raw["incident_record_commit"]
+        recovery_commit = raw["recovery_policy_commit"]
+        for commit_field, commit in (
+            ("supersedes_authorization_commit", old_commit),
+            ("incident_record_commit", incident_commit),
+            ("recovery_policy_commit", recovery_commit),
+        ):
+            if not isinstance(commit, str) or not commit:
+                raise FinalTestAuthorizationError(f"{commit_field} must be a non-empty commit SHA.")
+            if not _is_ancestor_of_head(repo_root, commit):
+                raise FinalTestAuthorizationError(
+                    f"{commit_field}={commit} is not an ancestor of HEAD -- supersession provenance "
+                    f"is invalid."
+                )
+        actual_old_sha256 = _historical_blob_sha256(repo_root, old_commit, rel_path)
+        if actual_old_sha256 != old_sha256:
+            raise FinalTestAuthorizationError(
+                f"supersedes_authorization_sha256={old_sha256!r} does not match the actual content of "
+                f"{rel_path} at commit {old_commit} (sha256={actual_old_sha256!r}) -- supersession "
+                f"provenance is invalid."
+            )
+        if raw["no_further_retry"] is not True:
+            raise FinalTestAuthorizationError("no_further_retry must be exactly True when superseding.")
 
     for commit_field in ("phase2b_protocol_commit", "matrix_commit", "cross_condition_addendum_commit"):
         commit = raw[commit_field]
@@ -242,9 +347,14 @@ def verify_final_test_authorization(
             f"matrix."
         )
 
+    if final_test_ledger_path is None:
+        from when_tta_hurts.ledger import FINAL_TEST_LEDGER_PATH as _default_final_test_ledger_path
+
+        final_test_ledger_path = _default_final_test_ledger_path
+
     authorized_by_run_id: dict[str, dict[str, Any]] = {}
     for entry in authorized_cells:
-        for field_name in ("run_id", "training_attempt", "checkpoint_hash"):
+        for field_name in _REQUIRED_CELL_KEYS:
             if field_name not in entry:
                 raise FinalTestAuthorizationError(
                     f"authorized_cells entry missing field {field_name!r}: {entry}"
@@ -272,6 +382,21 @@ def verify_final_test_authorization(
                 f"authorized_cells[{run_id!r}].checkpoint_hash does not match the current canonical "
                 f"checkpoint hash -- training history has changed since approval."
             )
+        # Exact-attempt binding (Phase 2B.6D): the authorized final-test
+        # attempt number for this cell must EXACTLY equal what the
+        # production runner would allocate next -- never merely "<= N".
+        # This is what makes "attempt 2 only for the affected cell,
+        # attempt 1 only for every other cell" (and never attempt 3, and
+        # never attempt 2 for an unaffected cell) mechanically enforced
+        # rather than advisory.
+        next_attempt = next_evaluation_attempt_number(run_id, final_test_root, final_test_ledger_path)
+        if entry["authorized_final_test_attempt"] != next_attempt:
+            raise FinalTestAuthorizationError(
+                f"authorized_cells[{run_id!r}].authorized_final_test_attempt="
+                f"{entry['authorized_final_test_attempt']!r} does not match the production runner's "
+                f"next allocatable attempt ({next_attempt}) -- refusing to authorize an attempt number "
+                f"that does not exactly match current final-test ledger/attempt-directory state."
+            )
 
     authorization_commit = _git(repo_root, "log", "-1", "--format=%H", "--", rel_path)
     if not authorization_commit:
@@ -281,6 +406,7 @@ def verify_final_test_authorization(
 
     return FinalTestAuthorization(
         status=raw["status"],
+        schema_version=raw["schema_version"],
         approval_timestamp=raw["approval_timestamp"],
         phase2b_protocol_commit=raw["phase2b_protocol_commit"],
         matrix_commit=raw["matrix_commit"],
@@ -292,4 +418,9 @@ def verify_final_test_authorization(
         authorized_cells_by_run_id=authorized_by_run_id,
         artifact_sha256=hash_file(full_path),
         authorization_commit=authorization_commit,
+        supersedes_authorization_sha256=raw.get("supersedes_authorization_sha256"),
+        supersedes_authorization_commit=raw.get("supersedes_authorization_commit"),
+        incident_record_commit=raw.get("incident_record_commit"),
+        recovery_policy_commit=raw.get("recovery_policy_commit"),
+        no_further_retry=raw.get("no_further_retry"),
     )
