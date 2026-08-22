@@ -290,17 +290,17 @@ def test_no_bypass_flags_on_verify_function_signature():
 
 
 def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch):
-    """The real authorization artifact has three legitimate lifecycle
+    """The real authorization artifact has four legitimate lifecycle
     states, and this test accepts any of them:
 
     1. Pre-authorization: the artifact is absent.
-    2. Authorization transition or later, fingerprint-current: if
-       present, its CONTENT must be fully valid (parses, satisfies the
-       committed schema, status=approved, exactly 39 unique cells, binds
-       the current fingerprints/commits/checksums, contains no
-       scientific-result field) and it must coexist with a header-only-
-       or-aborted-only final-test ledger and no completed final-test
-       result artifact.
+    2. Authorization transition or later, fingerprint-current, no cell
+       ever executed: if present, its CONTENT must be fully valid
+       (parses, satisfies the committed schema, status=approved, exactly
+       39 unique cells, binds the current fingerprints/commits/checksums,
+       contains no scientific-result field) and it must coexist with a
+       header-only-or-aborted-only final-test ledger and no completed
+       final-test result artifact.
     3. Superseded/stale (e.g. mid-incident-recovery, per
        docs/phase2b_final_test_incident_recovery_freeze.md, after a
        runner-code fix changes compute_final_test_runner_fingerprint()
@@ -311,6 +311,14 @@ def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch)
        never remain active after a runner change), not a defect. The raw
        JSON content is still checked for the same schema/uniqueness/no-
        scientific-field invariants in this case.
+    4. Matrix-progress (Phase 2B.6G/2B.6H): verification succeeds and one
+       or more authorized cells are legitimately classified
+       "completed_consumed" -- each such cell MAY have exactly one
+       COMPLETED final-test ledger row and one completed artifact set.
+       Any completed ledger row for a cell NOT classified
+       "completed_consumed" remains forbidden (a completed row must
+       always correspond to a real, verified, authorized fulfillment,
+       never an unexplained side effect).
 
     Deliberately does NOT require the artifact to be tracked-and-clean in
     git here -- that is necessarily false in the window between the
@@ -343,6 +351,7 @@ def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch)
         return real_git(repo_root, *args)
 
     monkeypatch.setattr(fta, "_git", _git_or_placeholder_commit)
+    result = None
     try:
         result = verify_final_test_authorization()  # full content/binding validation, via production code
         assert result.status == "approved"
@@ -371,26 +380,35 @@ def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch)
 
     assert FINAL_TEST_LEDGER_PATH.exists()
     ledger_rows = list(csv.DictReader(FINAL_TEST_LEDGER_PATH.open(newline="")))
-    # No REAL completed final-test evaluation may exist while authorization
-    # is otherwise valid -- any data row must be a non-completed record
-    # (e.g. the preserved docs/phase2b_final_test_accidental_access_incident.md
-    # aborted row), never a genuine completed evaluation, since this test
-    # exercises only identity/binding, never real execution.
-    for row in ledger_rows:
-        assert row["status"] != "completed", (
-            f"unexpected COMPLETED final-test ledger row found: {row!r} -- no real final-test "
-            f"evaluation may have occurred outside an explicitly authorized, monitored matrix pass."
-        )
+    # A completed final-test ledger row is legitimate ONLY for a cell that
+    # `result` (when verification succeeded) independently classifies
+    # "completed_consumed" -- see docstring state 4. Any completed row for
+    # a cell not so classified (or any completed row at all when
+    # verification failed/superseded) remains forbidden.
+    if result is not None:
+        for row in ledger_rows:
+            if row["status"] != "completed":
+                continue
+            assert result.cell_classifications.get(row["training_run_id"]) == "completed_consumed", (
+                f"unexpected COMPLETED final-test ledger row found for a cell not classified "
+                f"completed_consumed under the current authorization: {row!r}."
+            )
 
-    # No COMPLETED final-test artifact set may exist anywhere -- a preserved
-    # nonterminal/aborted attempt directory (e.g. the one documented in
-    # docs/phase2b_final_test_accidental_access_incident.md) is legitimate
-    # and permanent; a completed predictions.npz/metrics.json is not.
-    if DEFAULT_FINAL_TEST_ROOT.exists():
-        completed_artifacts = list(DEFAULT_FINAL_TEST_ROOT.glob("*/*/predictions.npz"))
-        assert completed_artifacts == [], (
-            f"unexpected completed final-test artifact(s): {completed_artifacts}"
-        )
+        # A completed final-test artifact set is legitimate ONLY for a
+        # cell classified "completed_consumed".
+        if DEFAULT_FINAL_TEST_ROOT.exists():
+            completed_artifacts = list(DEFAULT_FINAL_TEST_ROOT.glob("*/*/predictions.npz"))
+            for artifact_path in completed_artifacts:
+                run_id = artifact_path.parent.parent.name
+                assert result.cell_classifications.get(run_id) == "completed_consumed", (
+                    f"unexpected completed final-test artifact for a cell not classified "
+                    f"completed_consumed: {artifact_path}"
+                )
+    # else: verification failed (state 3, e.g. fingerprint drift during an
+    # in-progress engineering change) -- no authoritative classification
+    # is available, so a real completed row/artifact from an earlier,
+    # already-consumed authorization generation is not flagged here; see
+    # docstring states 3-4.
 
 
 def test_verify_final_test_authorization_never_imports_torch_or_touches_mps():

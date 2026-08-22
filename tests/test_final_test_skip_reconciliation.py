@@ -275,9 +275,16 @@ def test_run_final_test_evaluation_uses_the_corrected_skip_function(monkeypatch,
         resolution = 28
 
     class _FakeAuthorization:
-        authorized_cells_by_run_id = {"fake-run-a": {"training_attempt": 1, "checkpoint_hash": "chk-a"}}
+        authorized_cells_by_run_id = {
+            "fake-run-a": {
+                "training_attempt": 1,
+                "checkpoint_hash": "chk-a",
+                "authorized_final_test_attempt": 1,
+            }
+        }
         artifact_sha256 = "fake-artifact-sha"
         authorization_commit = "fake-authorization-commit"
+        cell_classifications = {"fake-run-a": "pending"}
 
         def receipt_for(self, run_id):
             return _FakeReceipt()

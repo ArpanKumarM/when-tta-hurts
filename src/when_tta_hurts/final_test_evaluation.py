@@ -286,8 +286,24 @@ def plan_final_test_evaluation(
     expanded = parse_and_validate_matrix(matrix_path, block_d_gate_passed=True)
     cells = list(expanded.cells)
 
+    auth_kwargs: dict[str, Any] = {}
+    if authorization_artifact_path is not None:
+        auth_kwargs["artifact_path"] = authorization_artifact_path
+    cell_classifications: dict[str, str] = {}
+    try:
+        authorization = verify_final_test_authorization(matrix_path=matrix_path, **auth_kwargs)
+        authorization_status = "approved"
+        authorization_error = None
+        cell_classifications = dict(authorization.cell_classifications)
+    except FinalTestAuthorizationError as e:
+        authorization_status = "missing_or_not_approved"
+        authorization_error = str(e)
+
     cell_reports: list[dict[str, Any]] = []
     n_training_eligible = 0
+    n_completed_consumed = 0
+    n_pending = 0
+    n_invalid = 0
     for cell in cells:
         run_id = cell.run_id()
         entry: dict[str, Any] = {
@@ -309,18 +325,15 @@ def plan_final_test_evaluation(
             entry["training_error"] = f"{type(e).__name__}: {e}"
 
         entry["existing_final_test_attempts"] = len(list_evaluation_attempts(run_id, root))
+        classification = cell_classifications.get(run_id)
+        entry["classification"] = classification
+        if classification == "completed_consumed":
+            n_completed_consumed += 1
+        elif classification == "pending":
+            n_pending += 1
+        elif classification is not None:
+            n_invalid += 1
         cell_reports.append(entry)
-
-    auth_kwargs: dict[str, Any] = {}
-    if authorization_artifact_path is not None:
-        auth_kwargs["artifact_path"] = authorization_artifact_path
-    try:
-        verify_final_test_authorization(matrix_path=matrix_path, **auth_kwargs)
-        authorization_status = "approved"
-        authorization_error = None
-    except FinalTestAuthorizationError as e:
-        authorization_status = "missing_or_not_approved"
-        authorization_error = str(e)
 
     return {
         "evaluator_fingerprint": evaluator_fp,
@@ -329,6 +342,9 @@ def plan_final_test_evaluation(
         "final_test_runner_fingerprint": runner_fp,
         "n_cells_total": len(cells),
         "n_cells_training_eligible": n_training_eligible,
+        "n_completed_consumed": n_completed_consumed,
+        "n_pending": n_pending,
+        "n_invalid": n_invalid,
         "cells": cell_reports,
         "authorization_status": authorization_status,
         "authorization_error": authorization_error,
@@ -400,6 +416,33 @@ def run_final_test_evaluation(
             f"'{run_id}' is not present in the current final-test authorization's authorized cell "
             f"set -- refusing to proceed."
         )
+
+    # Phase 2B.6H: a cell classified "completed_consumed" is fulfilled
+    # forever -- return an idempotent result derived ENTIRELY from the
+    # already-persisted ledger row and status.json, without device
+    # selection, checkpoint loading, fingerprint recomputation, or
+    # load_final_test_split(). This must happen BEFORE receipt_for()
+    # (which raises for a completed_consumed cell -- see
+    # docs/phase2b_final_test_matrix_progress_authorization_freeze.md)
+    # and before ANY of steps 4-17.
+    if authorization.cell_classifications.get(run_id) == "completed_consumed":
+        entry = authorization.authorized_cells_by_run_id[run_id]
+        consumed_attempt = entry["authorized_final_test_attempt"]
+        matching_status = next(
+            (s for s in list_evaluation_attempts(run_id, root) if s["attempt_number"] == consumed_attempt),
+            None,
+        )
+        if matching_status is None:
+            raise FinalTestAuthorizationError(
+                f"'{run_id}' is classified completed_consumed at attempt {consumed_attempt} but its "
+                f"status.json could not be found -- refusing to fabricate an idempotent result."
+            )
+        return {
+            "training_run_id": run_id,
+            "final_test_evaluation_id": matching_status.get("evaluation_config_hash"),
+            **matching_status,
+            "status": "already_completed_consumed",
+        }
 
     # Immutable, single-cell receipt derived ONCE from the already-
     # verified authorization (Phase 2B.6F,

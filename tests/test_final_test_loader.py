@@ -54,6 +54,7 @@ def _make_receipt(dataset="pathmnist", resolution=28):
         incident_record_commit=None,
         recovery_policy_commit=None,
         no_further_retry=None,
+        cell_classifications={"run-a": "pending"},
     )
     return auth.receipt_for("run-a")
 

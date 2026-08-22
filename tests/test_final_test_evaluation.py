@@ -66,10 +66,13 @@ class _FakeReceipt:
 
 
 class _FakeAuthorization:
-    def __init__(self, run_id="fake-run-a"):
-        self.authorized_cells_by_run_id = {run_id: {"training_attempt": 1, "checkpoint_hash": "chk-a"}}
+    def __init__(self, run_id="fake-run-a", classification="pending"):
+        self.authorized_cells_by_run_id = {
+            run_id: {"training_attempt": 1, "checkpoint_hash": "chk-a", "authorized_final_test_attempt": 1}
+        }
         self.artifact_sha256 = "fake-artifact-sha"
         self.authorization_commit = "fake-authorization-commit"
+        self.cell_classifications = {run_id: classification}
 
     def receipt_for(self, run_id):
         return _FakeReceipt(run_id)
@@ -157,6 +160,67 @@ def test_run_id_not_in_authorized_cells_stops_before_device(monkeypatch, tmp_pat
             final_test_ledger_path=tmp_path / "ledger.csv",
         )
     assert not (tmp_path / "final_test").exists()
+
+
+def test_completed_consumed_cell_returns_idempotent_result_without_device_or_checkpoint_access(
+    monkeypatch, tmp_path
+):
+    """Phase 2B.6H (2): a cell classified completed_consumed cannot be
+    rerun -- calling run_final_test_evaluation() for it must return an
+    idempotent result derived from its existing status.json, without
+    ever calling receipt_for(), check_final_test_evaluation_skip(),
+    start_evaluation_attempt(), device selection, checkpoint loading, or
+    load_final_test_split()."""
+    run_id = "fake-run-a"
+    cell, training_result, authorization = _patch_common(monkeypatch, run_id=run_id)
+    authorization.cell_classifications[run_id] = "completed_consumed"
+
+    def _raise_receipt_for(_run_id):
+        raise AssertionError("receipt_for() must never be called for a completed_consumed cell")
+
+    authorization.receipt_for = _raise_receipt_for
+    monkeypatch.setattr(fte, "check_final_test_evaluation_skip", _raise_if_called)
+    monkeypatch.setattr(fte, "start_evaluation_attempt", _raise_if_called)
+    monkeypatch.setattr(fte, "load_and_verify_canonical_checkpoint", _raise_if_called)
+    monkeypatch.setattr(fte, "load_final_test_split", _raise_if_called)
+    monkeypatch.setattr(
+        fte,
+        "list_evaluation_attempts",
+        lambda rid, root: [
+            {
+                "training_run_id": run_id,
+                "attempt_number": 1,
+                "status": "completed",
+                "evaluation_config_hash": "real-completed-hash",
+            }
+        ],
+    )
+
+    result = run_final_test_evaluation(
+        run_id,
+        device_resolver=_raise_if_called,
+        root=tmp_path / "final_test",
+        final_test_ledger_path=tmp_path / "ledger.csv",
+    )
+    assert result["status"] == "already_completed_consumed"
+    assert result["attempt_number"] == 1
+    assert not (tmp_path / "final_test").exists()
+    assert not (tmp_path / "ledger.csv").exists()
+
+
+def test_completed_consumed_cell_missing_status_json_refuses_rather_than_fabricates(monkeypatch, tmp_path):
+    run_id = "fake-run-a"
+    cell, training_result, authorization = _patch_common(monkeypatch, run_id=run_id)
+    authorization.cell_classifications[run_id] = "completed_consumed"
+    monkeypatch.setattr(fte, "list_evaluation_attempts", lambda rid, root: [])
+
+    with pytest.raises(FinalTestAuthorizationError, match="could not be found"):
+        run_final_test_evaluation(
+            run_id,
+            device_resolver=_raise_if_called,
+            root=tmp_path / "final_test",
+            final_test_ledger_path=tmp_path / "ledger.csv",
+        )
 
 
 def test_idempotent_skip_before_heavy_dependencies(monkeypatch, tmp_path):
@@ -404,6 +468,47 @@ def test_plan_mode_reports_real_repo_state():
     assert report["n_cells_training_eligible"] == 39
     assert report["authorization_status"] in ("approved", "missing_or_not_approved")
     assert report["test_split_accessed"] is False
+    # Phase 2B.6H: per-cell classification counts must always be internally
+    # consistent, and (when approved) must partition the whole matrix
+    # between completed_consumed and pending with zero invalid cells.
+    assert report["n_invalid"] == 0
+    if report["authorization_status"] == "approved":
+        assert report["n_completed_consumed"] + report["n_pending"] == 39
+    else:
+        assert report["n_completed_consumed"] == 0
+        assert report["n_pending"] == 0
+
+
+def test_plan_mode_reports_matrix_progress_classification_counts(monkeypatch):
+    """(9) Plan mode reports the real state as one completed/consumed
+    cell and N-1 pending cells, using a synthetic authorization bound to
+    the real matrix's actual run_id set (so this test is robust across
+    matrix edits, but exercises the exact counting/classification-report
+    logic in plan_final_test_evaluation())."""
+    from when_tta_hurts.matrix import parse_and_validate_matrix
+
+    real_cells = list(
+        parse_and_validate_matrix("configs/experiment_matrix.yaml", block_d_gate_passed=True).cells
+    )
+    run_ids = [c.run_id() for c in real_cells]
+    assert len(run_ids) >= 2
+
+    classifications = {rid: "pending" for rid in run_ids}
+    classifications[run_ids[0]] = "completed_consumed"
+
+    class _FakeAuth:
+        cell_classifications = classifications
+
+    monkeypatch.setattr(fte, "verify_final_test_authorization", lambda **k: _FakeAuth())
+
+    report = plan_final_test_evaluation()
+    assert report["authorization_status"] == "approved"
+    assert report["n_completed_consumed"] == 1
+    assert report["n_pending"] == len(run_ids) - 1
+    assert report["n_invalid"] == 0
+    consumed_entries = [c for c in report["cells"] if c["classification"] == "completed_consumed"]
+    assert len(consumed_entries) == 1
+    assert consumed_entries[0]["run_id"] == run_ids[0]
     assert len(report["evaluator_fingerprint"]) > 0
     assert len(report["final_test_runner_fingerprint"]) > 0
 

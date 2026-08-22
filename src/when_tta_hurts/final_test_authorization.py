@@ -38,10 +38,16 @@ from when_tta_hurts.artifacts import hash_file
 from when_tta_hurts.cross_condition_addendum import compute_cross_condition_fingerprint
 from when_tta_hurts.dataset_verification import expected_official_checksum
 from when_tta_hurts.final_test_identity import compute_final_test_runner_fingerprint
+from when_tta_hurts.final_test_result_artifacts import (
+    ALL_REQUIRED_FINAL_TEST_ARTIFACT_FILENAMES,
+    verify_final_test_artifact_manifest,
+)
 from when_tta_hurts.matrix import parse_and_validate_matrix
 from when_tta_hurts.statistical_analysis import compute_analysis_fingerprint
 from when_tta_hurts.validation_evaluation import (
+    _evaluation_ledger_rows_for_run,
     compute_evaluator_fingerprint,
+    evaluation_run_directory,
     next_evaluation_attempt_number,
     resolve_canonical_training_completion,
 )
@@ -166,6 +172,7 @@ class FinalTestAuthorization:
     incident_record_commit: str | None
     recovery_policy_commit: str | None
     no_further_retry: bool | None
+    cell_classifications: dict[str, str]
 
     def receipt_for(self, run_id: str) -> VerifiedFinalTestReceipt:
         """The ONLY way to construct a VerifiedFinalTestReceipt. Reads
@@ -178,6 +185,13 @@ class FinalTestAuthorization:
         entry = self.authorized_cells_by_run_id.get(run_id)
         if entry is None:
             raise FinalTestAuthorizationError(f"No authorized cell for run_id {run_id!r}.")
+        classification = self.cell_classifications.get(run_id)
+        if classification == "completed_consumed":
+            raise FinalTestAuthorizationError(
+                f"'{run_id}' is already completed_consumed at its authorized attempt -- a receipt "
+                f"authorizes NEW execution and must never be issued for an already-fulfilled cell. "
+                f"Callers must check cell_classifications[run_id] before calling receipt_for()."
+            )
         dataset = entry["dataset"]
         resolution = entry["resolution"]
         checksum_key = f"{dataset}@{resolution}"
@@ -253,6 +267,73 @@ def _historical_blob_sha256(repo_root: str | Path, commit: str, rel_path: str) -
             f"Could not read {rel_path} at commit {commit} to verify supersession -- {e}"
         ) from e
     return hashlib.sha256(content).hexdigest()
+
+
+_CELL_CLASSIFICATION_VALUES = frozenset({"pending", "completed_consumed", "invalid"})
+
+
+def _classify_final_test_cell(
+    run_id: str,
+    entry: dict[str, Any],
+    final_test_root: str | Path,
+    final_test_ledger_path: str | Path,
+) -> str:
+    """Phase 2B.6H: classifies ONE authorized cell into exactly one of
+    "pending" / "completed_consumed" / "invalid", using only that cell's
+    own ledger rows and attempt directories -- never a matrix-wide
+    boolean. A "completed_consumed" cell is accepted as fulfillment of
+    its authorization FOREVER and is never re-checked against
+    next_evaluation_attempt_number() again (that equality is a
+    pre-allocation property only). See
+    docs/phase2b_final_test_matrix_progress_authorization_freeze.md."""
+    authorized_attempt = entry["authorized_final_test_attempt"]
+    run_dir = evaluation_run_directory(run_id, final_test_root)
+    dir_numbers = {int(p.name.split("_")[1]) for p in _list_attempt_dirs_for_final_test(run_dir)}
+    ledger_rows = _evaluation_ledger_rows_for_run(run_id, final_test_ledger_path)
+    rows_at_attempt = [r for r in ledger_rows if int(r.get("evaluation_attempt", -1)) == authorized_attempt]
+
+    if not rows_at_attempt and authorized_attempt not in dir_numbers:
+        next_attempt = next_evaluation_attempt_number(run_id, final_test_root, final_test_ledger_path)
+        return "pending" if authorized_attempt == next_attempt else "invalid"
+
+    if authorized_attempt not in dir_numbers:
+        return "invalid"
+    if len(rows_at_attempt) != 1:
+        return "invalid"
+
+    row = rows_at_attempt[0]
+    if (
+        row.get("status") != "completed"
+        or row.get("confirmatory") != "True"
+        or row.get("split") != "test"
+        or row.get("test_split_accessed") != "True"
+        or row.get("test_predictions_computed") != "True"
+        or row.get("test_metrics_computed") != "True"
+        or row.get("test_metrics_persisted") != "True"
+    ):
+        return "invalid"
+
+    if row.get("checkpoint_hash") != entry.get("checkpoint_hash"):
+        return "invalid"
+    if row.get("training_attempt") != str(entry.get("training_attempt")):
+        return "invalid"
+
+    attempt_dir = run_dir / f"attempt_{authorized_attempt:03d}"
+    if not all((attempt_dir / fn).exists() for fn in ALL_REQUIRED_FINAL_TEST_ARTIFACT_FILENAMES):
+        return "invalid"
+    try:
+        manifest = json.loads((attempt_dir / "artifact_manifest.json").read_text())
+        verify_final_test_artifact_manifest(attempt_dir, manifest)
+    except Exception:
+        return "invalid"
+
+    return "completed_consumed"
+
+
+def _list_attempt_dirs_for_final_test(run_dir: Path) -> list[Path]:
+    if not run_dir.exists():
+        return []
+    return [p for p in run_dir.iterdir() if p.is_dir() and p.name.startswith("attempt_")]
 
 
 def verify_final_test_authorization(
@@ -443,6 +524,7 @@ def verify_final_test_authorization(
             "authorized_cells run_id set does not exactly match the frozen matrix's current cell set."
         )
 
+    cell_classifications: dict[str, str] = {}
     for cell in cells:
         run_id = cell.run_id()
         _, training_result = resolve_canonical_training_completion(run_id, matrix_path)
@@ -458,21 +540,29 @@ def verify_final_test_authorization(
                 f"authorized_cells[{run_id!r}].checkpoint_hash does not match the current canonical "
                 f"checkpoint hash -- training history has changed since approval."
             )
-        # Exact-attempt binding (Phase 2B.6D): the authorized final-test
-        # attempt number for this cell must EXACTLY equal what the
-        # production runner would allocate next -- never merely "<= N".
-        # This is what makes "attempt 2 only for the affected cell,
-        # attempt 1 only for every other cell" (and never attempt 3, and
-        # never attempt 2 for an unaffected cell) mechanically enforced
-        # rather than advisory.
-        next_attempt = next_evaluation_attempt_number(run_id, final_test_root, final_test_ledger_path)
-        if entry["authorized_final_test_attempt"] != next_attempt:
+        # Phase 2B.6H: per-cell dynamic classification replaces the
+        # earlier Phase 2B.6D matrix-wide exact-attempt check, which
+        # spuriously failed for the ENTIRE matrix once ANY cell
+        # completed (its own next-allocatable attempt naturally
+        # advances past its frozen binding after success). See
+        # docs/phase2b_final_test_matrix_progress_authorization_freeze.md.
+        # A "pending" cell must still bind EXACTLY to the next
+        # allocatable attempt (never merely "<= N"); a
+        # "completed_consumed" cell is accepted as fulfilled forever;
+        # an "invalid" cell fails closed and blocks the WHOLE matrix,
+        # not just itself -- scoping this check to only the requested
+        # cell would let execution proceed past an earlier corrupted or
+        # ambiguous cell.
+        classification = _classify_final_test_cell(run_id, entry, final_test_root, final_test_ledger_path)
+        if classification == "invalid":
             raise FinalTestAuthorizationError(
                 f"authorized_cells[{run_id!r}].authorized_final_test_attempt="
-                f"{entry['authorized_final_test_attempt']!r} does not match the production runner's "
-                f"next allocatable attempt ({next_attempt}) -- refusing to authorize an attempt number "
-                f"that does not exactly match current final-test ledger/attempt-directory state."
+                f"{entry['authorized_final_test_attempt']!r} is INVALID (failed/aborted/running/stale/"
+                f"ambiguous/corrupted ledger or attempt-directory evidence, or it does not match the "
+                f"production runner's next allocatable attempt while still pending) -- refusing to "
+                f"authorize ANY cell in the matrix until this is resolved."
             )
+        cell_classifications[run_id] = classification
 
     authorization_commit = _git(repo_root, "log", "-1", "--format=%H", "--", rel_path)
     if not authorization_commit:
@@ -500,6 +590,7 @@ def verify_final_test_authorization(
         incident_record_commit=raw.get("incident_record_commit"),
         recovery_policy_commit=raw.get("recovery_policy_commit"),
         no_further_retry=raw.get("no_further_retry"),
+        cell_classifications=cell_classifications,
     )
 
 

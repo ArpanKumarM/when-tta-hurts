@@ -183,16 +183,41 @@ def test_split_and_confirmatory_are_not_caller_overridable():
     assert "confirmatory" not in sig.parameters
 
 
-def test_real_production_final_test_ledger_has_no_completed_row():
-    """The real artifacts/ledger_final_test.csv must exist and must never
-    contain a status=completed row -- no real final-test evaluation may
-    have occurred outside an explicitly authorized, monitored matrix
-    pass. It may legitimately contain non-completed rows: e.g. the
-    single preserved status=aborted row documented in
-    docs/phase2b_final_test_accidental_access_incident.md."""
+def test_real_production_final_test_ledger_has_no_unexplained_completed_row():
+    """The real artifacts/ledger_final_test.csv must exist. Any
+    status=completed row must correspond to a cell that the current
+    production authorization (when it verifies) classifies
+    "completed_consumed" -- Phase 2B.6G's first real, authorized
+    completion legitimately produced one such row. A completed row for
+    any cell NOT so classified (or any completed row while verification
+    fails/is stale) remains forbidden. It may also legitimately contain
+    non-completed rows: e.g. the preserved status=aborted/failed rows
+    documented in docs/phase2b_final_test_accidental_access_incident.md
+    and docs/phase2b_final_test_attempt2_preaccess_failure.md."""
     import csv
+
+    from when_tta_hurts.final_test_authorization import (
+        FINAL_TEST_AUTHORIZATION_PATH,
+        FinalTestAuthorizationError,
+        verify_final_test_authorization,
+    )
 
     assert FINAL_TEST_LEDGER_PATH.exists()
     rows = list(csv.DictReader(FINAL_TEST_LEDGER_PATH.open(newline="")))
-    for row in rows:
-        assert row["status"] != "completed", f"unexpected COMPLETED final-test ledger row: {row!r}"
+    completed_rows = [row for row in rows if row["status"] == "completed"]
+    if not completed_rows:
+        return
+
+    if not FINAL_TEST_AUTHORIZATION_PATH.exists():
+        pytest.fail(f"completed final-test row(s) exist with no authorization artifact: {completed_rows!r}")
+
+    try:
+        authorization = verify_final_test_authorization()
+    except FinalTestAuthorizationError:
+        return  # stale/superseded authorization mid-engineering -- no authoritative classification available
+
+    for row in completed_rows:
+        assert authorization.cell_classifications.get(row["training_run_id"]) == "completed_consumed", (
+            f"unexpected COMPLETED final-test ledger row for a cell not classified "
+            f"completed_consumed: {row!r}"
+        )
