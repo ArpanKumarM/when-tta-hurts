@@ -1,12 +1,14 @@
 {
-  "approval_timestamp": "2026-08-22T12:35:00-04:00",
+  "approval_timestamp": "2026-08-22T14:15:00-04:00",
   "authorized_cells": [
     {
+      "authorized_final_test_attempt": 2,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e",
       "dataset": "pathmnist",
       "effective_training_config_hash": null,
       "normalization": "batchnorm",
+      "prior_attempt_disposition": "accidental_pytest_execution_incident_1ee5f73",
       "resolution": 28,
       "run_id": "A-pathmnist-28px-batchnorm-policy-none-s0",
       "seed": 0,
@@ -14,6 +16,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "f3be88438078ce362528dc8c3919e7d395fb095902cca48159c861b6e308e6bf",
       "dataset": "pathmnist",
@@ -26,6 +29,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "b8b971407b6b149d8e64e4bf55ec87f95a753cad5256aa5f3a57d419145d9c06",
       "dataset": "pathmnist",
@@ -38,6 +42,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "fcf6a2f41c136cadc012bab8726249062ed1a16290a98504b65903a96c234e98",
       "dataset": "pathmnist",
@@ -50,6 +55,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "b63d8c9b9a38b3520f5aeb971a4afb60d760a7bffc707a63ce6c344abe5a4650",
       "dataset": "pathmnist",
@@ -62,6 +68,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "483eaa5957f570981a43933d3985b714b56911abc75ccbdebf5db8c6cdc9cdd3",
       "dataset": "pathmnist",
@@ -74,6 +81,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "b5dea833b8985d7bf38e4092e5400a03452b0ec55a79ec7e52edd0091e6b3b54",
       "dataset": "pathmnist",
@@ -86,6 +94,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "b898155b2c6ab101ca2940f30bceff8a23a7f67ef9adc56d7c07ab2275831c8e",
       "dataset": "pathmnist",
@@ -98,6 +107,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "39950a5ac56c50aeee11d3a6ca879baabfcc19506ce041f046fbff10243fe293",
       "dataset": "pathmnist",
@@ -110,6 +120,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "d54b5cd32b64882bc11030992db97ce57973df2078e37317871d1c66c92e484b",
       "dataset": "pathmnist",
@@ -122,6 +133,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "ebfef2c0e60ae1ee1095f6c47afd6dbad3c7abc2c32ebc5f21e502a9f33ee44e",
       "dataset": "pathmnist",
@@ -134,6 +146,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "92c8739bfc1063b03782514c7c2b259cb3014ea5f0262f64e138be29e8c1ecd2",
       "dataset": "pathmnist",
@@ -146,6 +159,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "e96e3b5615c71fba0fd05d21439c3d2a551ddba00985dbcc0b8affcfda5c519f",
       "dataset": "bloodmnist",
@@ -158,6 +172,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "1448dad9629f956c195e301dabe42047502ccf2981d6f4f3154f5994a35da98f",
       "dataset": "bloodmnist",
@@ -170,6 +185,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "552c975c860585e9b57298d2e1fd3550420b9ad696066d2fe7bef49401a235f0",
       "dataset": "bloodmnist",
@@ -182,6 +198,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "cd804a09e799f7d89c1e98dad10a63a953a9a5204d98d5fa4c5677b7937765bd",
       "dataset": "bloodmnist",
@@ -194,6 +211,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "d914f4ecd0d597b9cc422dd7e5b07413c900eaa084b0f0992575010dfd899928",
       "dataset": "bloodmnist",
@@ -206,6 +224,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "34a1b18158c3572f281035592f8a3af33eb2baa11055aa9a8c2e6a60d495741d",
       "dataset": "bloodmnist",
@@ -218,6 +237,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "8572b19b0cb24b9c46ae07a1114eaa65ddad7690826265fe3af8984b2d0b6235",
       "dataset": "bloodmnist",
@@ -230,6 +250,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "ff75298a2d1733dd1e43dd60d90a74a51450f80704c1e648e41eabf9ba7f4017",
       "dataset": "bloodmnist",
@@ -242,6 +263,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "b2e83aa7e85050f6c3743c9e0a269428b3e1795d369a622328eb5b5e2abe2869",
       "dataset": "bloodmnist",
@@ -254,6 +276,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "6dc1eb925bf71525353ddec56ac41b78e4d3e04b761ad47fb13ca5ae8d1443b0",
       "dataset": "bloodmnist",
@@ -266,6 +289,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "2278d9cfd09a165210e53528eaa0f8567dba6b7303c0f5b21a09a20a652ec98b",
       "dataset": "bloodmnist",
@@ -278,6 +302,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "A_core_normalization_resolution",
       "checkpoint_hash": "9cbeb71c38c6d50873d5972ced6ca962cc1f38cde2bd080362351dd06df20fd9",
       "dataset": "bloodmnist",
@@ -290,6 +315,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "B_policy_matching",
       "checkpoint_hash": "f9d06b302a5a0a737e0476a01fa88cb1c309243f862de0f8f1a45e37ec88c47f",
       "dataset": "pathmnist",
@@ -302,6 +328,7 @@
       "training_policy": "matched_to_approved_tta_policy"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "B_policy_matching",
       "checkpoint_hash": "d8e1b91d421fd3c78a81d06bc736fb76da1b71a4d2b500afacc721798705343f",
       "dataset": "pathmnist",
@@ -314,6 +341,7 @@
       "training_policy": "matched_to_approved_tta_policy"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "B_policy_matching",
       "checkpoint_hash": "44263c3e3db4a82d5fe7af30eb9b10f6e9dfb927783a3a6a7a32ee2250a43a71",
       "dataset": "pathmnist",
@@ -326,6 +354,7 @@
       "training_policy": "matched_to_approved_tta_policy"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "B_policy_matching",
       "checkpoint_hash": "fe0bc5ac9371bca580baddceb11d3afa74019bd970a2f815b5d082ea4124e95e",
       "dataset": "bloodmnist",
@@ -338,6 +367,7 @@
       "training_policy": "matched_to_approved_tta_policy"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "B_policy_matching",
       "checkpoint_hash": "233311a29208b1944b32fc9c4ea69b3eb4a68efbf38c7aed8e2d1a951a2389f9",
       "dataset": "bloodmnist",
@@ -350,6 +380,7 @@
       "training_policy": "matched_to_approved_tta_policy"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "B_policy_matching",
       "checkpoint_hash": "3d867a7872cb2a7f3678125bfcc204c30230148438c9fd6ca9836c4b3dddf738",
       "dataset": "bloodmnist",
@@ -362,6 +393,7 @@
       "training_policy": "matched_to_approved_tta_policy"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "C_positive_control_reproduction",
       "checkpoint_hash": "bd529f57be5f06042f0b0f29e62444e6e38e6b0aa3ab9b40df144943a0bf7d48",
       "dataset": "dermamnist",
@@ -374,6 +406,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "C_positive_control_reproduction",
       "checkpoint_hash": "ab087ce6cf7dfc7ab343ce699511225b432762db95a739c12be8485b1510b216",
       "dataset": "dermamnist",
@@ -386,6 +419,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "C_positive_control_reproduction",
       "checkpoint_hash": "44881dca162455ee3b7e4d0f0b09c2777b663bf958c76d0d749aeef378c3a6cf",
       "dataset": "dermamnist",
@@ -398,6 +432,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "D_conditional_128px",
       "checkpoint_hash": "276169a842c64261764c2499d520a87b72014746f9d8289dd1a3878b01d25966",
       "dataset": "pathmnist",
@@ -410,6 +445,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "D_conditional_128px",
       "checkpoint_hash": "7fc1cf8f52c42029687a3e4d44170c5441a064b8f7036453a06b6433e01fc090",
       "dataset": "pathmnist",
@@ -422,6 +458,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "D_conditional_128px",
       "checkpoint_hash": "2c302516e9cc7a6d40e4f85f12f731e977dafab5fe69061dc5a6e52921b160de",
       "dataset": "pathmnist",
@@ -434,6 +471,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "D_conditional_128px",
       "checkpoint_hash": "ec97e1b8b34af028722273a12ecf95a8ac2747291ab3cba8d03c58d4f2cb49ca",
       "dataset": "bloodmnist",
@@ -446,6 +484,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "D_conditional_128px",
       "checkpoint_hash": "f3980a44fb10c1bfc84efe5cd9daca70f174f29f29ec350b0b0a6da0741bfc14",
       "dataset": "bloodmnist",
@@ -458,6 +497,7 @@
       "training_policy": "none"
     },
     {
+      "authorized_final_test_attempt": 1,
       "block": "D_conditional_128px",
       "checkpoint_hash": "f0ddb47ab6d78491a05ee3a010936d4915c3217a4c41174b22ca3b52edb966b5",
       "dataset": "bloodmnist",
@@ -474,11 +514,13 @@
   "cross_condition_addendum_config_sha256": "bf2f1a260c2906d974659f65434babb8a3196fa5ca70948b84219edca36abfc5",
   "cross_condition_analysis_fingerprint": "5843f613df4cac4bacef81bb4b6db420f8ae51d2c0c9efef539f6cc20b96b98c",
   "evaluator_fingerprint": "7fdce1db496ffb149e2adf608e5b811f8b9dfb5f944daa3462cda1b5d87c6bef",
-  "final_test_runner_fingerprint": "0c1a6ac0f84765cdfa52b42cd0ef698df00bd78fa8c6d12fb7e5eb196c80840e",
-  "final_test_runner_source_commit": "c3849f471e0331679e9c1851adbf751d19a787cb",
+  "final_test_runner_fingerprint": "efc57a362da86f70b22b6120de9c87a599f418261a180ca56a4a3a9b9de93b4f",
+  "final_test_runner_source_commit": "d7de6ecbfd92033a38f9d7b038d6c35abe0485e6",
+  "incident_record_commit": "1ee5f737c8eccd39ca0d1a49183cfffda1051c2a",
   "matrix_commit": "72b63e2d519cdf2fa7f09755cd6127d729be0ee9",
   "matrix_config_hash": "ed9d36e6b3e0fdb4561de6ad70e75720502c97538bf7e6fdb67dd2bd4cb9045a",
   "n_authorized_cells": 39,
+  "no_further_retry": true,
   "official_dataset_checksums": {
     "bloodmnist@128": "adace1e0ed228fccda1f39692059dd4c",
     "bloodmnist@28": "7053d0359d879ad8a5505303e11de1dc",
@@ -489,12 +531,15 @@
     "pathmnist@64": "55aa9c1e0525abe5a6b9d8343a507616"
   },
   "phase2b_protocol_commit": "ce4c962",
+  "recovery_policy_commit": "965daebbff2af976ea05f88cffb1eda848d36b12",
   "retry_policy": "no_automatic_retry",
-  "schema_version": "phase2b.6b-v1",
+  "schema_version": "phase2b.6d-v2",
   "scope": "one_evaluation_per_authorized_cell",
   "split": "test",
   "statistical_analysis_fingerprint": "fa0cb164f062253b58b4af37e6278f6aca005cf1c16ab29286e35ae3209e3450",
   "status": "approved",
+  "supersedes_authorization_commit": "76c46e2a25e95a397198f4a03d56a9db58ab6877",
+  "supersedes_authorization_sha256": "ccff976dda7d93e8fdd8c4bc2fe78eaecef5316bb011b1e420ed7d30a9637ec2",
   "tta_seed_config_sha256": "5037bc2f0ebd2723e984947485d6e332be842b69a4d929266eb29882affcc586",
   "tta_seed_derivation_sha256": "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
   "tta_seed_freeze_commit": "27fe46232f7b3b6c34bbfbbe82c3f363e3650eba"
