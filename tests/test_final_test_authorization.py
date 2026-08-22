@@ -7,6 +7,7 @@ artifact or the real 39-cell matrix's real ledger state.
 
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 
@@ -334,10 +335,27 @@ def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch)
         assert forbidden not in payload_lower, f"forbidden scientific-result field {forbidden!r} found"
 
     assert FINAL_TEST_LEDGER_PATH.exists()
-    ledger_lines = FINAL_TEST_LEDGER_PATH.read_text().splitlines()
-    assert len(ledger_lines) == 1, "final-test ledger must remain header-only"
+    ledger_rows = list(csv.DictReader(FINAL_TEST_LEDGER_PATH.open(newline="")))
+    # No REAL completed final-test evaluation may exist while authorization
+    # is otherwise valid -- any data row must be a non-completed record
+    # (e.g. the preserved docs/phase2b_final_test_accidental_access_incident.md
+    # aborted row), never a genuine completed evaluation, since this test
+    # exercises only identity/binding, never real execution.
+    for row in ledger_rows:
+        assert row["status"] != "completed", (
+            f"unexpected COMPLETED final-test ledger row found: {row!r} -- no real final-test "
+            f"evaluation may have occurred outside an explicitly authorized, monitored matrix pass."
+        )
 
-    assert not DEFAULT_FINAL_TEST_ROOT.exists(), "no final-test attempt directory may exist yet"
+    # No COMPLETED final-test artifact set may exist anywhere -- a preserved
+    # nonterminal/aborted attempt directory (e.g. the one documented in
+    # docs/phase2b_final_test_accidental_access_incident.md) is legitimate
+    # and permanent; a completed predictions.npz/metrics.json is not.
+    if DEFAULT_FINAL_TEST_ROOT.exists():
+        completed_artifacts = list(DEFAULT_FINAL_TEST_ROOT.glob("*/*/predictions.npz"))
+        assert completed_artifacts == [], (
+            f"unexpected completed final-test artifact(s): {completed_artifacts}"
+        )
 
 
 def test_verify_final_test_authorization_never_imports_torch_or_touches_mps():

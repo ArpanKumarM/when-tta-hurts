@@ -183,9 +183,16 @@ def test_split_and_confirmatory_are_not_caller_overridable():
     assert "confirmatory" not in sig.parameters
 
 
-def test_real_production_final_test_ledger_is_header_only():
-    """The real, committed artifacts/ledger_final_test.csv must exist
-    (created during this engineering task) but contain zero data rows."""
+def test_real_production_final_test_ledger_has_no_completed_row():
+    """The real artifacts/ledger_final_test.csv must exist and must never
+    contain a status=completed row -- no real final-test evaluation may
+    have occurred outside an explicitly authorized, monitored matrix
+    pass. It may legitimately contain non-completed rows: e.g. the
+    single preserved status=aborted row documented in
+    docs/phase2b_final_test_accidental_access_incident.md."""
+    import csv
+
     assert FINAL_TEST_LEDGER_PATH.exists()
-    lines = FINAL_TEST_LEDGER_PATH.read_text().splitlines()
-    assert len(lines) == 1
+    rows = list(csv.DictReader(FINAL_TEST_LEDGER_PATH.open(newline="")))
+    for row in rows:
+        assert row["status"] != "completed", f"unexpected COMPLETED final-test ledger row: {row!r}"

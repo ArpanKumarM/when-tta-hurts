@@ -202,6 +202,7 @@ def test_failure_before_test_access_records_truthful_flags(monkeypatch, tmp_path
 
 def test_failure_after_test_access_records_truthful_flags(monkeypatch, tmp_path):
     cell, training_result, authorization = _patch_common(monkeypatch)
+    monkeypatch.setattr(fte, "select_device", lambda name: object())
     monkeypatch.setattr(fte, "check_evaluation_skip", lambda *a, **k: None)
     monkeypatch.setattr(fte, "load_and_verify_canonical_checkpoint", lambda *a, **k: object())
 
@@ -266,6 +267,7 @@ def test_failure_after_test_access_records_truthful_flags(monkeypatch, tmp_path)
 
 def test_completed_happy_path_records_all_flags_true(monkeypatch, tmp_path):
     _patch_common(monkeypatch)
+    monkeypatch.setattr(fte, "select_device", lambda name: object())
     monkeypatch.setattr(fte, "check_evaluation_skip", lambda *a, **k: None)
     monkeypatch.setattr(fte, "load_and_verify_canonical_checkpoint", lambda *a, **k: object())
 
@@ -378,11 +380,19 @@ def test_plan_mode_never_reads_predictions_checkpoints_or_touches_torch(monkeypa
 
 
 def test_plan_mode_reports_real_repo_state():
+    """Authorization was absent when this test was first written (Phase
+    2B.6A) and is now genuinely approved (Phase 2B.6B,
+    docs/phase2b_final_test_authorization_audit.md) -- this assertion is
+    updated to the current, legitimate state rather than a hardcoded
+    assumption about authorization's presence/absence, exactly the same
+    stale-real-state-assertion pattern this project has hit and fixed
+    several times before. plan_final_test_evaluation() itself remains
+    side-effect-free and test-data-free regardless of authorization
+    state, which is what this test actually verifies."""
     report = plan_final_test_evaluation()
     assert report["n_cells_total"] == 39
     assert report["n_cells_training_eligible"] == 39
-    assert report["authorization_status"] == "missing_or_not_approved"
-    assert report["execution_locked"] is True
+    assert report["authorization_status"] in ("approved", "missing_or_not_approved")
     assert report["test_split_accessed"] is False
     assert len(report["evaluator_fingerprint"]) > 0
     assert len(report["final_test_runner_fingerprint"]) > 0
@@ -443,11 +453,48 @@ def test_cli_has_no_bypass_flags():
             assert forbidden not in lowered, f"CLI flag {flag!r} looks like a forbidden override."
 
 
-def test_cli_evaluate_test_refuses_before_heavy_dependencies_real_repo(monkeypatch):
-    """The ONE permitted real-run_id invocation: proves the refusal path
-    stops before device/checkpoint/data access, using the REAL repo state
-    (no authorization artifact exists) -- never touches MPS or any real
-    checkpoint/dataset array."""
+def _load_cli_module(name):
+    """Load scripts/run_final_test_evaluation.py fresh. The freshly loaded
+    module still imports run_final_test_evaluation from the ALREADY-
+    CACHED when_tta_hurts.final_test_evaluation module (sys.modules), so
+    patching attributes on `fte` (imported at the top of this test file)
+    correctly affects what the freshly loaded CLI module calls -- this is
+    the namespace-correctness property
+    docs/phase2b_final_test_accidental_access_incident.md's root-cause
+    fix depends on."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, Path("scripts/run_final_test_evaluation.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cli_evaluate_test_refuses_when_authorization_fails_never_depends_on_real_repo_state(
+    monkeypatch,
+):
+    """Regression test for
+    docs/phase2b_final_test_accidental_access_incident.md: the ORIGINAL
+    version of this test relied on the real repo's authorization artifact
+    being permanently absent, which stopped being true the moment
+    Phase 2B.6B's authorization was committed -- and its one intended
+    safety net patched the WRONG namespace
+    (when_tta_hurts.devices.select_device instead of
+    when_tta_hurts.final_test_evaluation.select_device), so real
+    execution proceeded, unmocked, inside a pytest process.
+
+    This version NEVER depends on whether the real authorization artifact
+    exists: it forces authorization to fail by patching
+    verify_final_test_authorization in the EXACT namespace
+    run_final_test_evaluation() actually looks it up in
+    (when_tta_hurts.final_test_evaluation, i.e. the `fte` module imported
+    at the top of this file) -- never the definition module
+    (when_tta_hurts.final_test_authorization) and never an unrelated
+    module. Device selection and canonical-training resolution are also
+    patched, in the SAME correct namespace, as sentinels that hard-fail
+    the test if ever reached -- proving authorization-failure gates
+    everything before any heavy dependency, deterministically, regardless
+    of real repo state, forever."""
     monkeypatch.setattr(
         sys,
         "argv",
@@ -458,19 +505,93 @@ def test_cli_evaluate_test_refuses_before_heavy_dependencies_real_repo(monkeypat
             "A-pathmnist-28px-batchnorm-policy-none-s0",
         ],
     )
-    monkeypatch.setattr("when_tta_hurts.devices.select_device", _raise_if_called)
 
-    import importlib.util
+    def _raise_auth_error(**k):
+        raise FinalTestAuthorizationError("synthetic: authorization intentionally failed for this test")
 
-    spec = importlib.util.spec_from_file_location(
-        "run_final_test_evaluation_cli", Path("scripts/run_final_test_evaluation.py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    monkeypatch.setattr(fte, "verify_final_test_authorization", _raise_auth_error)
+    monkeypatch.setattr(fte, "resolve_canonical_training_completion", _raise_if_called)
+    monkeypatch.setattr(fte, "select_device", _raise_if_called)
 
+    # Snapshot rather than assume non-existence: the affected cell from
+    # docs/phase2b_final_test_accidental_access_incident.md permanently
+    # retains its preserved attempt_001 directory -- this test must prove
+    # NOTHING NEW was created by THIS invocation, not that the directory
+    # tree is empty.
+    cell_dir = Path("artifacts/final_test/A-pathmnist-28px-batchnorm-policy-none-s0")
+    attempts_before = sorted(p.name for p in cell_dir.iterdir()) if cell_dir.exists() else []
+
+    module = _load_cli_module("run_final_test_evaluation_cli_auth_fail")
     exit_code = module.main()
+
     assert exit_code == 1
-    assert not Path("artifacts/final_test").exists()
+    attempts_after = sorted(p.name for p in cell_dir.iterdir()) if cell_dir.exists() else []
+    assert attempts_after == attempts_before, (
+        "authorization-failure refusal must never allocate a new attempt"
+    )
+
+
+def test_cli_evaluate_test_refuses_for_unrecognized_run_id_real_repo(monkeypatch):
+    """Exercises the REAL, current, valid authorization verifier (safe:
+    verify_final_test_authorization() never touches MPS/checkpoint/
+    dataset arrays -- confirmed in test_final_test_authorization.py) but
+    with a run ID that can never be a real matrix cell, so this can never
+    resolve to, allocate an attempt for, or touch any real authorized
+    cell -- and therefore never depends on whether authorization exists
+    or not. Device selection and canonical-training resolution are
+    patched, in the correct namespace, as sentinels proving the
+    unauthorized-run-ID refusal happens before either is ever reached."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_final_test_evaluation.py",
+            "evaluate-test",
+            "--run-id",
+            "not-a-real-matrix-run-id-zzz",
+        ],
+    )
+    monkeypatch.setattr(fte, "resolve_canonical_training_completion", _raise_if_called)
+    monkeypatch.setattr(fte, "select_device", _raise_if_called)
+
+    module = _load_cli_module("run_final_test_evaluation_cli_unrecognized_run_id")
+    exit_code = module.main()
+
+    assert exit_code == 1
+    assert not Path("artifacts/final_test/not-a-real-matrix-run-id-zzz").exists()
+
+
+def test_regression_wrong_namespace_monkeypatch_does_not_affect_final_test_evaluation_select_device(
+    monkeypatch,
+):
+    """Direct regression test reproducing the ORIGINAL incident's exact
+    defect mechanism (never invokes real MPS): final_test_evaluation.py
+    does `from when_tta_hurts.devices import select_device`, binding its
+    OWN name in its OWN module namespace at import time. Patching
+    `when_tta_hurts.devices.select_device` (the definition module) can
+    NEVER affect that already-bound reference -- proven here by patching
+    both namespaces to distinguishable sentinel values and confirming
+    `fte.select_device` still returns ITS OWN sentinel, unaffected by the
+    other module's patch."""
+    import when_tta_hurts.devices as devices_module
+
+    def _wrong_namespace_sentinel(name):
+        return "WRONG_NAMESPACE_SENTINEL"
+
+    def _correct_namespace_sentinel(name):
+        return "CORRECT_NAMESPACE_SENTINEL"
+
+    # Patch the DEFINITION module (the historically wrong target)...
+    monkeypatch.setattr(devices_module, "select_device", _wrong_namespace_sentinel)
+    # ...and independently confirm fte's own already-imported reference
+    # is a completely separate binding, unaffected by the patch above,
+    # by explicitly setting it to a DIFFERENT sentinel and proving THAT
+    # one -- not the devices-module patch -- is what fte actually uses.
+    monkeypatch.setattr(fte, "select_device", _correct_namespace_sentinel)
+
+    assert fte.select_device("mps") == "CORRECT_NAMESPACE_SENTINEL"
+    assert devices_module.select_device("mps") == "WRONG_NAMESPACE_SENTINEL"
+    # The two are proven independent: patching one never touches the other.
 
 
 # ---------------------------------------------------------------------------
@@ -506,3 +627,88 @@ def test_no_scientific_metric_printed_by_cli_redaction_helper():
     assert "accuracy" not in json.dumps(redacted)
     assert redacted["status"] == "completed"
     assert redacted["artifact_hashes"] == {"predictions.npz": "abc"}
+
+
+# ---------------------------------------------------------------------------
+# Incident-response structural guards
+# (docs/phase2b_final_test_accidental_access_incident.md, Part D)
+# ---------------------------------------------------------------------------
+
+
+def test_static_every_cli_evaluate_test_invocation_patches_a_heavy_dependency():
+    """AST-based proof that every test function in this file which drives
+    the CLI in evaluate-test mode also monkeypatches at least one heavy-
+    dependency symbol on `fte` (the correct namespace) before calling
+    module.main() -- so no future CLI test can silently regress to the
+    wrong-namespace/no-mock pattern that caused
+    docs/phase2b_final_test_accidental_access_incident.md."""
+    import ast
+
+    source = Path("tests/test_final_test_evaluation.py").read_text()
+    tree = ast.parse(source)
+
+    guarded_symbols = {
+        "verify_final_test_authorization",
+        "resolve_canonical_training_completion",
+        "select_device",
+    }
+
+    violations = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if node.name == "test_static_every_cli_evaluate_test_invocation_patches_a_heavy_dependency":
+            continue  # this check's own docstring mentions "evaluate-test"; it does not drive the CLI
+        source_segment = ast.get_source_segment(source, node) or ""
+        if "evaluate-test" not in source_segment:
+            continue  # this function does not drive the CLI's evaluate-test mode
+        patched_targets = set()
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "setattr"
+            ):
+                if len(call.args) >= 2 and isinstance(call.args[1], ast.Constant):
+                    patched_targets.add(call.args[1].value)
+        if not (patched_targets & guarded_symbols):
+            violations.append(node.name)
+
+    assert violations == [], (
+        f"CLI-evaluate-test test function(s) {violations} do not patch any of "
+        f"{sorted(guarded_symbols)} in the correct namespace -- could silently reach "
+        f"the real final-test runner."
+    )
+
+
+def test_cli_evaluate_test_never_indexes_real_test_arrays_even_with_valid_authorization(monkeypatch):
+    """Even with the real, valid authorization artifact in place, confirms
+    no CLI evaluate-test invocation can reach np.load on a
+    predictions.npz-shaped path -- exercises the REAL, current
+    authorization verifier (safe: proven metadata-only in
+    test_final_test_authorization.py) via a run ID that can never be a
+    real matrix cell, combined with an active guard on np.load."""
+    real_load = np.load
+
+    def _guarded_load(path, *a, **k):
+        if str(path).endswith(".npz"):
+            raise AssertionError(f"a CLI test attempted to load an .npz array-shaped path: {path}")
+        return real_load(path, *a, **k)
+
+    monkeypatch.setattr(np, "load", _guarded_load)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_final_test_evaluation.py",
+            "evaluate-test",
+            "--run-id",
+            "not-a-real-matrix-run-id-zzz",
+        ],
+    )
+    monkeypatch.setattr(fte, "resolve_canonical_training_completion", _raise_if_called)
+    monkeypatch.setattr(fte, "select_device", _raise_if_called)
+
+    module = _load_cli_module("run_final_test_evaluation_cli_array_guard")
+    exit_code = module.main()
+    assert exit_code == 1
