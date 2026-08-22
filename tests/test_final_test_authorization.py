@@ -324,9 +324,9 @@ def test_real_production_authorization_artifact_lifecycle_invariant(monkeypatch)
         "f1_score",
         "calibration",
         "delta_accuracy",
-        "\"ece\"",
+        '"ece"',
         "brier",
-        "\"nll\"",
+        '"nll"',
         "tta_delta",
     )
     payload_lower = json.dumps(raw).lower()
