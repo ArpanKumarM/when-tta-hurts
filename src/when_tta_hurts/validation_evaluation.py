@@ -1063,10 +1063,6 @@ def _recompute_all_conditions_from_predictions(
     clean_probs = predictions["clean_probs"]
     view_probs = predictions["view_probs"]
     view_log_probs = np.log(np.clip(view_probs, 1e-12, 1.0))
-    # log(p) is a valid logit-equivalent input (softmax(log(p)) == p
-    # exactly) -- see the metric-contract freeze document's hand-
-    # calculated proof. predictions.npz never stores raw clean logits.
-    clean_logits_equivalent = np.log(np.clip(clean_probs, 1e-12, 1.0))
 
     conditions: dict[str, Any] = {"naive_tta": {agg: {} for agg in AGGREGATORS}}
     for n in prefix_sequence:
@@ -1084,7 +1080,7 @@ def _recompute_all_conditions_from_predictions(
     conditions["original_anchored_tta"] = {
         n: _per_prefix_metrics(
             clean_probs,
-            softmax(original_anchored_mean_probability(clean_logits_equivalent, view_log_probs, n)),
+            softmax(original_anchored_mean_probability(clean_probs, view_log_probs, n)),
             labels,
         )
         for n in prefix_sequence
@@ -1277,7 +1273,7 @@ def compute_validation_evaluation(
 
     conditions["original_anchored_tta"] = {
         n: _per_prefix_metrics(
-            clean_probs, softmax(original_anchored_mean_probability(clean_logits, view_log_probs, n)), labels
+            clean_probs, softmax(original_anchored_mean_probability(clean_probs, view_log_probs, n)), labels
         )
         for n in PREFIX_SEQUENCE
     }

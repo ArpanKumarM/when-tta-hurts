@@ -140,13 +140,15 @@ def test_mean_probability_receives_no_post_aggregation_softmax():
 
 
 def test_original_anchoring_receives_no_post_aggregation_softmax():
+    # Phase 2B.6J: original_anchored_mean_probability now takes the clean
+    # PROBABILITY array directly (never raw/log logits) -- see
+    # docs/phase2b_final_test_semantic_metric_contract_freeze.md.
     rng = np.random.default_rng(3)
     view_log_probs = _view_log_probs(rng)
     labels = rng.integers(0, 3, size=5)
     clean_probs = softmax(rng.normal(size=(5, 3)))
-    clean_logp = np.log(np.clip(clean_probs, 1e-12, 1.0))
 
-    agg = softmax(original_anchored_mean_probability(clean_logp, view_log_probs, 3))
+    agg = softmax(original_anchored_mean_probability(clean_probs, view_log_probs, 3))
     result = _per_prefix_metrics(clean_probs, agg, labels)
     expected = compute_metrics_from_probabilities(agg, labels)
     assert np.isclose(result["brier_score"], expected["brier_score"])

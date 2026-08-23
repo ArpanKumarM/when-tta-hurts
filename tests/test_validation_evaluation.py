@@ -852,11 +852,14 @@ def test_confidence_weighting_hand_calculated():
 
 
 def test_original_anchoring_hand_calculated():
+    # Phase 2B.6J: original_anchored_mean_probability now takes the clean
+    # PROBABILITY array directly (never raw/log logits) -- see
+    # docs/phase2b_final_test_semantic_metric_contract_freeze.md.
     from when_tta_hurts.evaluation.aggregation import original_anchored_mean_probability
 
-    clean_logits = np.log(np.array([[0.8, 0.2]]))
+    clean_probs = np.array([[0.8, 0.2]])
     view_logits = np.log(np.array([[[0.4, 0.6]], [[0.2, 0.8]]]))  # 2 views, 1 sample
-    result = np.exp(original_anchored_mean_probability(clean_logits, view_logits, 2))
+    result = np.exp(original_anchored_mean_probability(clean_probs, view_logits, 2))
     expected = (np.array([0.8, 0.2]) + np.array([0.4, 0.6]) + np.array([0.2, 0.8])) / 3
     assert np.allclose(result[0], expected, atol=1e-6)
 

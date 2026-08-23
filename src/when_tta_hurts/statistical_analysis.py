@@ -327,6 +327,7 @@ def _resolve_canonical_evaluation_identity(
     ledger_path: str | Path = "artifacts/ledger_validation_evaluation.csv",
     validation_evaluation_root: str | Path = "artifacts/validation_evaluation",
     amendments_ledger_path: str | Path | None = None,
+    reconciliation_ledger_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Read-only: resolve run_id's sole eligible (current-fingerprint,
     completed, non-amendment-excluded) evaluation-ledger row, WITHOUT
@@ -383,6 +384,29 @@ def _resolve_canonical_evaluation_identity(
             "evaluation_status": "ambiguous",
             "evaluation_ids": [r["evaluation_id"] for r, _ in eligible_rows],
         }
+
+    # Phase 2B.6K: a stale row (evaluator_fingerprint mismatch) is still
+    # eligible if it carries a valid, verified reconciliation record
+    # binding its OLD fingerprint to the CURRENT one -- deterministic
+    # integrity repair, never a fresh rerun. Only applies when there is
+    # exactly one stale row (never resolves ambiguity via reconciliation).
+    if len(stale_rows) == 1:
+        from when_tta_hurts.validation_metric_reconciliation import (
+            RECONCILIATION_LEDGER_PATH,
+            is_reconciled_compatible,
+        )
+
+        r, attempt = stale_rows[0]
+        reconciled, _record = is_reconciled_compatible(
+            run_id, current_fp, reconciliation_ledger_path or RECONCILIATION_LEDGER_PATH
+        )
+        if reconciled:
+            return {
+                "evaluation_status": "eligible",
+                "evaluation_id": r["evaluation_id"],
+                "evaluation_attempt": attempt,
+                "via_reconciliation": True,
+            }
     if stale_rows:
         return {
             "evaluation_status": "stale",

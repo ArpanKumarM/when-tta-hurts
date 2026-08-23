@@ -50,8 +50,13 @@ def test_confidence_weighted_n25_is_prefix_of_n100():
 
 
 def test_original_anchored_n25_is_prefix_of_n100():
+    # Phase 2B.6J: original_anchored_mean_probability now takes the clean
+    # PROBABILITY array directly (must sum to 1 per row) -- see
+    # docs/phase2b_final_test_semantic_metric_contract_freeze.md.
+    from when_tta_hurts.metrics import softmax
+
     ordered = _ordered_logits(n_views=100, n_samples=4)
-    clean = torch.rand(4, 9).numpy()
+    clean = softmax(torch.rand(4, 9).numpy())
     a = original_anchored_mean_probability(clean, ordered[:25], n_views=25)
     b = original_anchored_mean_probability(clean, ordered, n_views=25)
     assert np.allclose(a, b)

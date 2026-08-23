@@ -92,14 +92,30 @@ def confidence_weighted_average(ordered_view_logits: np.ndarray, n_views: int) -
 
 
 def original_anchored_mean_probability(
-    clean_logits: np.ndarray, ordered_view_logits: np.ndarray, n_views: int
+    clean_probs: np.ndarray, ordered_view_logits: np.ndarray, n_views: int
 ) -> np.ndarray:
     """One clean view plus n_views augmented views, equal-weight mean
     probability over the n_views+1 views (clean view has equal weight with
-    each augmented view, not double-weighted or half-weighted)."""
+    each augmented view, not double-weighted or half-weighted).
+
+    `clean_probs` MUST be the already-computed, canonical clean
+    probability array (the exact array persisted to predictions.npz) --
+    NEVER raw clean logits. Phase 2B.6J: this function previously
+    accepted raw clean logits and computed `softmax(clean_logits)`
+    internally; every caller now supplies the persisted probability
+    array directly instead, so the live-computation and semantic-
+    verification-recompute call sites use the bit-identical clean anchor
+    representation. Passing raw logits here (re-softmaxing them
+    yourself first) is no longer correct: `clean_probs` must already sum
+    to 1 per row. See
+    docs/phase2b_final_test_semantic_metric_contract_freeze.md for the
+    incident this eliminates -- an internal `softmax(clean_logits)` here
+    was NEVER clipped, while the recompute path's caller previously had
+    to synthesize an equivalent input via `log(clip(clean_probs, eps,
+    1))`, which silently diverges from the true clean anchor whenever
+    any class probability underflows the `1e-12` clip floor."""
     if n_views < 1 or n_views > ordered_view_logits.shape[0]:
         raise ValueError(f"n_views={n_views} out of range [1, {ordered_view_logits.shape[0]}]")
-    clean_probs = softmax(clean_logits)  # [N, C]
     aug_probs = np.stack([softmax(v) for v in ordered_view_logits[:n_views]], axis=0)  # [n_views, N, C]
     all_probs = np.concatenate([clean_probs[None, :, :], aug_probs], axis=0)  # [n_views+1, N, C]
     return _to_log_probs(all_probs.mean(axis=0))

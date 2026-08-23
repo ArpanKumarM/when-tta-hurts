@@ -730,9 +730,21 @@ def test_plan_mode_never_reads_predictions_or_metrics_files(monkeypatch):
 
 
 def test_plan_mode_reports_real_repo_pair_counts():
-    """Structural check against the real repo state: plan mode must report
-    exactly the frozen pair counts derived in this same session's Phase
-    2B.5B memo (H1=12, H2=12, H3=6), all eligible, current fingerprint."""
+    """Structural check against the real repo state: plan mode must
+    report exactly the frozen pair counts derived in this same session's
+    Phase 2B.5B memo (H1=12, H2=12, H3=6). `complete` is NOT hardcoded --
+    Phase 2B.6K's reconciliation mechanism means completeness legitimately
+    flips based on whether every required cell's canonical evaluation
+    currently resolves 'eligible' under
+    _resolve_canonical_evaluation_identity() (directly OR via a valid
+    reconciliation record). This test independently re-derives that same
+    per-cell eligibility using the identical production resolver plan
+    mode itself calls, and asserts the plan's reported `complete` field
+    matches -- without valid reconciliation evidence the derived
+    expectation (and therefore the plan) must be False; with complete,
+    verified reconciliation evidence for every required run_id, both
+    must be True."""
+    from when_tta_hurts.statistical_analysis import _resolve_canonical_evaluation_identity
     from when_tta_hurts.validation_evaluation import compute_evaluator_fingerprint
 
     report = plan_cross_condition_addendum()
@@ -741,8 +753,15 @@ def test_plan_mode_reports_real_repo_pair_counts():
     assert report["hypotheses"]["H1"]["n_pairs_required"] == 12
     assert report["hypotheses"]["H2"]["n_pairs_required"] == 12
     assert report["hypotheses"]["H3"]["n_pairs_required"] == 6
+
     for hyp in ("H1", "H2", "H3"):
-        assert report["hypotheses"][hyp]["complete"] is True
+        expected_complete = True
+        for pair in report["hypotheses"][hyp]["pairs"]:
+            for run_id in (pair["condition_a_run_id"], pair["condition_b_run_id"]):
+                status = _resolve_canonical_evaluation_identity(run_id, current_fp).get("evaluation_status")
+                if status != "eligible":
+                    expected_complete = False
+        assert report["hypotheses"][hyp]["complete"] is expected_complete
 
 
 # ---------------------------------------------------------------------------

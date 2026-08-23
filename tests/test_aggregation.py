@@ -111,7 +111,10 @@ def test_confidence_weighted_sums_to_one():
 
 def test_original_anchored_equal_weight_with_augmented_views():
     # clean + 1 augmented view, equal weight -> simple average of the two.
-    clean = np.array([[0.0, 0.0]])  # probs [.5, .5]
+    # Phase 2B.6J: original_anchored_mean_probability now takes the clean
+    # PROBABILITY array directly (never raw logits) -- see
+    # docs/phase2b_final_test_semantic_metric_contract_freeze.md.
+    clean = np.array([[0.5, 0.5]])  # already-normalized clean probabilities
     aug = np.array([[np.log(3.0), 0.0]])  # probs [.75, .25]
     ordered = np.stack([aug], axis=0)
     result = softmax(original_anchored_mean_probability(clean, ordered, n_views=1))
@@ -120,7 +123,7 @@ def test_original_anchored_equal_weight_with_augmented_views():
 
 
 def test_original_anchored_n_views_2_equal_weight_over_three():
-    clean = np.array([[0.0, 0.0]])  # [.5,.5]
+    clean = np.array([[0.5, 0.5]])  # already-normalized clean probabilities
     aug1 = np.array([[np.log(3.0), 0.0]])  # [.75,.25]
     aug2 = np.array([[0.0, np.log(3.0)]])  # [.25,.75]
     ordered = np.stack([aug1, aug2], axis=0)
