@@ -1,8 +1,6 @@
 {
-  "approval_timestamp": "2026-08-22T19:10:00-04:00",
-  "attempt2_failure_record_commit": "28d0c3d7de477b83dda5819586e4d89a0ffd1c4b",
-  "authorization_generation": 4,
-  "authorization_receipt_freeze_commit": "69a2c5902c5575f0bc9946be954ef980eccb1093",
+  "approval_timestamp": "2026-08-23T09:15:00-04:00",
+  "authorization_generation": 5,
   "authorized_cells": [
     {
       "authorized_final_test_attempt": 3,
@@ -10,22 +8,14 @@
       "cell_status": "completed_consumed",
       "checkpoint_hash": "30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e",
       "consumed_binding": {
-        "completed_ledger_binding": {
-          "evaluation_attempt": "3",
-          "status": "completed",
-          "training_attempt": "3",
-          "training_run_id": "A-pathmnist-28px-batchnorm-policy-none-s0"
-        },
-        "cross_condition_analysis_fingerprint": "5843f613df4cac4bacef81bb4b6db420f8ae51d2c0c9efef539f6cc20b96b98c",
-        "evaluator_fingerprint": "7fdce1db496ffb149e2adf608e5b811f8b9dfb5f944daa3462cda1b5d87c6bef",
+        "corrected_contract_compatibility_attestation": "56/56 checks (7 prefixes x 8 metric fields) passed within atol=rtol=1e-6 under the corrected original_anchored_tta contract -- see docs/phase2b_final_test_semantic_metric_contract_freeze.md sec.2 and docs/phase2b_final_test_post_aggregation_fix_reauthorization_audit.md.",
         "final_test_evaluation_id": "e846df3f5a95fa8745599d1f71809a84ebf86e2fbfbe8bc5aee4c1e4f9b96b20",
         "max_authorized_attempt_for_this_cell": 3,
         "no_further_attempt_authorized": true,
         "primary_artifact_hash": "0841e7502cb8da05bfe58c56508197e18a3db0665f6033c24eb9a43a800551af",
-        "prior_authorization_commit": "f8e794053926a275d4eb503f2994668577435317",
-        "prior_authorization_sha256": "0332f696bea36ea92c45a3691147337a351c1990584c71a1cccb4da8b494343a",
-        "prior_final_test_runner_fingerprint": "54bc3f58c8a91fc3d2b7a58c6336e722dbd4cb24a8a8239e5e17fd8591e95877",
-        "statistical_analysis_fingerprint": "fa0cb164f062253b58b4af37e6278f6aca005cf1c16ab29286e35ae3209e3450"
+        "prior_authorization_commit": "45447800d3420c52b3802d2578a2f7e7b07b12fb",
+        "prior_authorization_sha256": "d7ad4a2739156dfdf336bef1da712d0d99e705e821a733fd73d685aefcb3a929",
+        "prior_final_test_runner_fingerprint": "54bc3f58c8a91fc3d2b7a58c6336e722dbd4cb24a8a8239e5e17fd8591e95877"
       },
       "dataset": "pathmnist",
       "normalization": "batchnorm",
@@ -36,12 +26,15 @@
       "training_policy": "none"
     },
     {
-      "authorized_final_test_attempt": 1,
+      "authorized_final_test_attempt": 2,
       "block": "A_core_normalization_resolution",
       "cell_status": "pending",
       "checkpoint_hash": "f3be88438078ce362528dc8c3919e7d395fb095902cca48159c861b6e308e6bf",
       "dataset": "pathmnist",
       "normalization": "batchnorm",
+      "prior_attempt_dispositions": {
+        "1": "semantic_verification_failed_before_persistence"
+      },
       "resolution": 28,
       "run_id": "A-pathmnist-28px-batchnorm-policy-none-s1",
       "seed": 1,
@@ -530,17 +523,15 @@
       "training_policy": "none"
     }
   ],
+  "cascade_disposition_freeze_commit": "d420657deeb212f76cbdba151093925d53a1e1e3",
   "cross_condition_addendum_commit": "35e373a043f2dd99eb29a9e7e603a5607619e468",
   "cross_condition_addendum_config_sha256": "bf2f1a260c2906d974659f65434babb8a3196fa5ca70948b84219edca36abfc5",
-  "cross_condition_analysis_fingerprint": "5843f613df4cac4bacef81bb4b6db420f8ae51d2c0c9efef539f6cc20b96b98c",
-  "evaluator_fingerprint": "7fdce1db496ffb149e2adf608e5b811f8b9dfb5f944daa3462cda1b5d87c6bef",
-  "final_test_runner_fingerprint": "3659ddaaeae47a71251991e0cfac50ae16e621e802380988c2bdaa66b327ef12",
-  "first_completion_record_commit": "2563eb992f8fc4880d7812a7d4c3ba144e34ee21",
+  "cross_condition_analysis_fingerprint": "7a51b1ed284173a51f9e5654d29bac23cf80952c5c5b3d366cfc6489430b1c51",
+  "evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
+  "final_test_runner_fingerprint": "e223dc087917ff8aa0a8093f749b2e528c6b14e3f704206f3baf847ddbbd7834",
   "incident_record_commit": "1ee5f737c8eccd39ca0d1a49183cfffda1051c2a",
   "matrix_commit": "72b63e2d519cdf2fa7f09755cd6127d729be0ee9",
   "matrix_config_hash": "ed9d36e6b3e0fdb4561de6ad70e75720502c97538bf7e6fdb67dd2bd4cb9045a",
-  "matrix_progress_authorization_freeze_commit": "14bdc2c1019c023de4c598ffa01b074643f51fae",
-  "matrix_progress_engineering_fix_commit": "a67fe66b23b2d6efe613a2b86a1e1919d45d020b",
   "n_authorized_cells": 39,
   "n_completed_consumed": 1,
   "n_pending": 38,
@@ -555,18 +546,23 @@
     "pathmnist@64": "55aa9c1e0525abe5a6b9d8343a507616"
   },
   "phase2b_protocol_commit": "ce4c962",
-  "reauthorization_reason": "authorization-lifecycle-only: the matrix-progress-aware classification fix changed final_test_runner_fingerprint, but performed NO scientific computation change. Cell 1's completed, verified scientific result remains valid and MUST NOT be rerun.",
-  "receipt_engineering_fix_commit": "dc97a047f694e5b4683d8a60b4379ca9186ab3f5",
+  "reauthorization_reason": "Shared aggregation-contract correction (original_anchored_mean_probability now takes the canonical persisted probability array directly, eliminating a clip/round-trip asymmetry). Cascaded evaluator/statistical-analysis/cross-condition/runner fingerprints are all-scientific-computation-preserving: all 39 validation evaluations were deterministically reconciled from already-persisted probabilities (no rerun, no new inference), and cell 1's completed final-test result was independently reconfirmed compatible (56/56 checks) under the corrected contract.",
+  "reconciliation_implementation_fingerprint": "1b70509568c79a7cc5162fe01b7ba5ba746763fc889b8e32383d40b61c6a74b3",
   "recovery_policy_commit": "965daebbff2af976ea05f88cffb1eda848d36b12",
   "retry_policy": "no_automatic_retry",
   "schema_version": "phase2b.6d-v2",
   "scope": "one_evaluation_per_authorized_cell",
+  "semantic_metric_contract_freeze_commit": "382bc7a203360652053269ed6530aa26921b5d26",
+  "semantic_verification_incident_commit": "fb8e5dd004ef3906891a190b0874ed3d9ea2a208",
+  "shared_fix_and_reconciliation_framework_commit": "6f012d1e0c518ec673204e55af5aeeb279d00b73",
   "split": "test",
-  "statistical_analysis_fingerprint": "fa0cb164f062253b58b4af37e6278f6aca005cf1c16ab29286e35ae3209e3450",
+  "statistical_analysis_fingerprint": "509eca2682075cc5d9e69da4e670b35caade69ebe80dbb8407b10db9a4fb9a01",
   "status": "approved",
-  "supersedes_authorization_commit": "f8e794053926a275d4eb503f2994668577435317",
-  "supersedes_authorization_sha256": "0332f696bea36ea92c45a3691147337a351c1990584c71a1cccb4da8b494343a",
+  "supersedes_authorization_commit": "45447800d3420c52b3802d2578a2f7e7b07b12fb",
+  "supersedes_authorization_sha256": "d7ad4a2739156dfdf336bef1da712d0d99e705e821a733fd73d685aefcb3a929",
   "tta_seed_config_sha256": "5037bc2f0ebd2723e984947485d6e332be842b69a4d929266eb29882affcc586",
   "tta_seed_derivation_sha256": "4ddab1df75616fbff1543665667d24ccb0b047f37dca42a8ae2bbaad55d81acd",
-  "tta_seed_freeze_commit": "27fe46232f7b3b6c34bbfbbe82c3f363e3650eba"
+  "tta_seed_freeze_commit": "27fe46232f7b3b6c34bbfbbe82c3f363e3650eba",
+  "validation_reconciliation_commit": "bbbe7e2c0e74d550a23428fec2b4e52f31927c0a",
+  "validation_reconciliation_ledger_sha256": "ef80337b4cf672936144246c2869a141c056db2d43217b00c4b72a2e47ee10bf"
 }
