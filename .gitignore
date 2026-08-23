@@ -45,6 +45,15 @@ artifacts/*
 # `git add`, never a force-add workaround. Does NOT exist yet: creating it
 # is explicitly out of scope for Phase 2B.6A engineering.
 !artifacts/final_test_authorization.json
+# Phase 2B.6K validation-metric reconciliation ledger (same append-only,
+# human-auditable-CSV rationale as the ledgers above) plus its per-cell
+# corrected-original-anchored-metric evidence records -- these JSON
+# records ARE the reconciliation deliverable (small, not bulky
+# predictions/model output), unlike artifacts/validation_evaluation/'s
+# per-attempt predictions.npz/metrics.json, which stay ignored.
+!artifacts/ledger_validation_reconciliation.csv
+!artifacts/validation_evaluation_reconciliation/
+!artifacts/validation_evaluation_reconciliation/**
 
 # Python
 __pycache__/

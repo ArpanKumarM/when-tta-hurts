@@ -1,0 +1,86 @@
+{
+  "corrected_evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
+  "evaluation_attempt": 1,
+  "evaluation_id": "4f844fa44b7f8842632fc14b1c871545dd4e9e4b00a23368bd47ba7a6e406fde",
+  "manifest_sha256": "b1ef33d1cf34034bfb4509a2df66e260d1b4e5e45d7b686dd110b60f70ac6b50",
+  "metadata_sha256": "6c6aafa9b2ab98f41b74ee07127e851316c205a9aa3855e7388186d8a32348d6",
+  "metrics_sha256": "69ca3f1a557e55fb15369fafaec4e802c19acea9af10b347b350e95740ba4bbe",
+  "old_evaluator_fingerprint": "7fdce1db496ffb149e2adf608e5b811f8b9dfb5f944daa3462cda1b5d87c6bef",
+  "original_anchored_tta_corrected": {
+    "1": {
+      "accuracy": 0.9105357856857257,
+      "brier_score": 0.2934879037529406,
+      "delta_accuracy": -0.06907237105157937,
+      "expected_calibration_error": 0.25245986739750714,
+      "harm_rate": 0.07346938775510205,
+      "macro_f1": 0.912259058503227,
+      "negative_log_likelihood": 0.5075202584266663,
+      "rescue_rate": 0.14215686274509803
+    },
+    "10": {
+      "accuracy": 0.5319872051179528,
+      "brier_score": 0.5719805476465755,
+      "delta_accuracy": -0.4476209516193522,
+      "expected_calibration_error": 0.08766314273671073,
+      "harm_rate": 0.4602040816326531,
+      "macro_f1": 0.4960810161982867,
+      "negative_log_likelihood": 1.1468437910079956,
+      "rescue_rate": 0.1568627450980392
+    },
+    "100": {
+      "accuracy": 0.48350659736105556,
+      "brier_score": 0.636428629024398,
+      "delta_accuracy": -0.4961015593762495,
+      "expected_calibration_error": 0.12678903886159865,
+      "harm_rate": 0.5095918367346939,
+      "macro_f1": 0.4278168144519895,
+      "negative_log_likelihood": 1.3970112800598145,
+      "rescue_rate": 0.15196078431372548
+    },
+    "2": {
+      "accuracy": 0.7441023590563774,
+      "brier_score": 0.4025112189171088,
+      "delta_accuracy": -0.2355057976809276,
+      "expected_calibration_error": 0.16117199994876882,
+      "harm_rate": 0.24306122448979592,
+      "macro_f1": 0.7458203196209789,
+      "negative_log_likelihood": 0.717048168182373,
+      "rescue_rate": 0.12745098039215685
+    },
+    "25": {
+      "accuracy": 0.5021991203518592,
+      "brier_score": 0.6120646689354633,
+      "delta_accuracy": -0.47740903638544585,
+      "expected_calibration_error": 0.11094198749214113,
+      "harm_rate": 0.4909183673469388,
+      "macro_f1": 0.4548580179013416,
+      "negative_log_likelihood": 1.2912352085113525,
+      "rescue_rate": 0.1715686274509804
+    },
+    "5": {
+      "accuracy": 0.5876649340263894,
+      "brier_score": 0.5141408236568644,
+      "delta_accuracy": -0.39194322271091564,
+      "expected_calibration_error": 0.07399414307395012,
+      "harm_rate": 0.4036734693877551,
+      "macro_f1": 0.5668127961055203,
+      "negative_log_likelihood": 0.9786368608474731,
+      "rescue_rate": 0.1715686274509804
+    },
+    "50": {
+      "accuracy": 0.48900439824070374,
+      "brier_score": 0.6285106540549141,
+      "delta_accuracy": -0.4906037584966013,
+      "expected_calibration_error": 0.12220946860100115,
+      "harm_rate": 0.5046938775510204,
+      "macro_f1": 0.4365652975058955,
+      "negative_log_likelihood": 1.3593244552612305,
+      "rescue_rate": 0.18627450980392157
+    }
+  },
+  "predictions_sha256": "5990bc1ffa6ec9b0dfcfb95490d7553fb3e7a6bbf5116dd3a312eeea787c704a",
+  "reconciliation_code_fingerprint": "1b70509568c79a7cc5162fe01b7ba5ba746763fc889b8e32383d40b61c6a74b3",
+  "reconciliation_source_commit": "6f012d1e0c518ec673204e55af5aeeb279d00b73",
+  "training_run_id": "A-pathmnist-64px-groupnorm-policy-none-s0",
+  "unaffected_conditions_match": true
+}
