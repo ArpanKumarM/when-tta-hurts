@@ -1,0 +1,91 @@
+{
+  "approval_timestamp": "2026-08-27T00:00:00Z",
+  "authorized_operations": [
+    "unseal"
+  ],
+  "complete_reporting_contract": {
+    "block_c_reported_regardless_of_direction": true,
+    "every_planned_family_cell_pair_seed_reported": true,
+    "no_h4_claim_permitted": true,
+    "no_pooled_or_model_population_inference_permitted": true,
+    "no_selective_omission_by_magnitude_direction_ci_or_p_value": true
+  },
+  "cross_condition_addendum_fingerprint": "7a51b1ed284173a51f9e5654d29bac23cf80952c5c5b3d366cfc6489430b1c51",
+  "cross_condition_results_commit": "29a3bfe6c7c7bec4eb131d48a63d8dce51e32412",
+  "evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
+  "final_test_analysis_fingerprint": "91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc",
+  "final_test_reporting_fingerprint": "baf02763f9b1f3dc5163dbb52069af842aef47de94acfcbca945e2be5d3736be",
+  "final_test_runner_fingerprint": "e223dc087917ff8aa0a8093f749b2e528c6b14e3f704206f3baf847ddbbd7834",
+  "generation3_final_test_analysis_authorization_sha256": "50d272dd02c1cbb907400fd763e7cc0bd7a07f52670ddba0bd48c660b269f418",
+  "generation5_final_test_authorization_sha256": "1e217e7e678ce37cee5c2b51fbf76429aa0b3b5298e622b1bbcb5363a6969f32",
+  "max_unseal_operations": 1,
+  "no_alternate_input_output_or_configuration_route": true,
+  "output_paths": [
+    "artifacts/final_test_scientific_summary.json",
+    "docs/phase2b_final_test_scientific_results.md",
+    "docs/phase2b_final_test_scientific_interpretation.md"
+  ],
+  "preregistered_results_commit": "4426bf55476d1761afe15ded4d56d48ded0fee51",
+  "schema_version": "phase2b.8a-v1",
+  "sealed_inputs": [
+    {
+      "analysis_id": "d9e335e0f28b578631975e83442480e59055edab2d2ba340a71a70f44bc93b7f",
+      "attempt": 1,
+      "identifier": "H1",
+      "kind": "cross_condition",
+      "manifest_sha256": "91141627513dd358ea5516db855849e22e828d67247e3137e2387af87a379438",
+      "result_sha256": "6624abeff9112b416bed92a4124dc1d38504548a0e66fa3db8b999bfa1b6cbe2"
+    },
+    {
+      "analysis_id": "5645a6cd96f414c173937a27fcc133c3bc5547eec454fae1787aa14bc6edd09c",
+      "attempt": 1,
+      "identifier": "H2",
+      "kind": "cross_condition",
+      "manifest_sha256": "a3c4a8186defccb94bb6850bff77076cb66f8ce0f7e4eab17bf897206cd2d647",
+      "result_sha256": "2350de61c3ff83362eb9a0ab2cd88ff736c5f4c2ebd9f90eb97e46700ab11732"
+    },
+    {
+      "analysis_id": "5bc1e82cc6a07932b0b736c6f8d37396a47ba0be94e59632a1d36d764ddcd6a7",
+      "attempt": 1,
+      "identifier": "H3",
+      "kind": "cross_condition",
+      "manifest_sha256": "ffa9882ba14bfb839b8bede4ab6cac96d9e6a3c687151d9e6581b4f2b5acbda7",
+      "result_sha256": "f7922b2984aba16c8a5a0833d9f0d500e8bc58a15fedd5529011dc70375f9bf8"
+    },
+    {
+      "analysis_id": "360f3bf01727fcdade1425480e7a62a001f9684b28b10bbdba8904de6f1e643f",
+      "attempt": 1,
+      "identifier": "BLOCK_C",
+      "kind": "family",
+      "manifest_sha256": "85c8b9d33f16006da1fbac592fa421a5f2e915dbd3c0422302f1a132c521753f",
+      "result_sha256": "025f8150afcd2af03261a8cf0a6d3fc12f6c41a256c94a3903a6eaab1dabfc41"
+    },
+    {
+      "analysis_id": "5cc611bcdedf0f721f28c44ef5044b599045ec133797bc9185c8f339bf1f125b",
+      "attempt": 1,
+      "identifier": "H1",
+      "kind": "family",
+      "manifest_sha256": "68374729eedef97dc2735b1a20c3d49905fe61a928e0e80c8de0c9b0457a6987",
+      "result_sha256": "967847d958d20a63bd0331a5d70bca412228773aa7f10a818b129e51fb69fefd"
+    },
+    {
+      "analysis_id": "dfbc33f0e2fc7cc8300faf07a64d8c7a9a282cc6ee27f9193c4ec87cfd76aee5",
+      "attempt": 1,
+      "identifier": "H2",
+      "kind": "family",
+      "manifest_sha256": "c265839077e33cb9a676111992f5ccbb9e96c97503a28114c457f5e2f4b7c4db",
+      "result_sha256": "c5fa6e61ebb2469b3698ab0cb72577bafe2dd960e26e9c84a56940ae3c849097"
+    },
+    {
+      "analysis_id": "fa74d98d22a4f25875ef6284f98cb7f21b1030aba9ccb6c4148f1a779f48db56",
+      "attempt": 1,
+      "identifier": "H3",
+      "kind": "family",
+      "manifest_sha256": "3350845d386d06d106ece3f41d93adb79b145febb9ee81a2aad3df93c41eb723",
+      "result_sha256": "f426d1e012dfede44a8a5f26097a63d7ca6317343b334b618a6fb559423e9cca"
+    }
+  ],
+  "status": "approved",
+  "unsealing_freeze_commit": "486028c3b2e40014a38b3bfc818e113a95d39f9c",
+  "validation_statistical_analysis_fingerprint": "509eca2682075cc5d9e69da4e670b35caade69ebe80dbb8407b10db9a4fb9a01"
+}
