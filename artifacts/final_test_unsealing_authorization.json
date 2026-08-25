@@ -10,12 +10,19 @@
     "no_pooled_or_model_population_inference_permitted": true,
     "no_selective_omission_by_magnitude_direction_ci_or_p_value": true
   },
+  "correction_implementation_commit": "990e5b5e464fb08f5b95a1a3dffc452613e3d925",
   "cross_condition_addendum_fingerprint": "7a51b1ed284173a51f9e5654d29bac23cf80952c5c5b3d366cfc6489430b1c51",
   "cross_condition_results_commit": "29a3bfe6c7c7bec4eb131d48a63d8dce51e32412",
   "evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
   "final_test_analysis_fingerprint": "91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc",
-  "final_test_reporting_fingerprint": "baf02763f9b1f3dc5163dbb52069af842aef47de94acfcbca945e2be5d3736be",
+  "final_test_reporting_fingerprint": "2c9ac6b2398db4ef49c28510fdabcb7f0e48a4d046c5614fccd00da271cf8026",
   "final_test_runner_fingerprint": "e223dc087917ff8aa0a8093f749b2e528c6b14e3f704206f3baf847ddbbd7834",
+  "generation1_output_hashes": {
+    "interpretation_markdown": "dcb80c27a902a9c3a6dec7619d25da68031170bb297657877694c1c422827adc",
+    "results_markdown": "d435171ebf4c141ed7a9edad87f7c6ee52e7e316893b4261b142bcf6befbee8a",
+    "summary_json": "3f726f92c4659a807a5c7b1e51ddccb12c543ff439e8d0e8f6ff1721dc3f8a76"
+  },
+  "generation1_preservation_commit": "447dfe0ee77bd12e972d7948279b57eb63d0bcfa",
   "generation3_final_test_analysis_authorization_sha256": "50d272dd02c1cbb907400fd763e7cc0bd7a07f52670ddba0bd48c660b269f418",
   "generation5_final_test_authorization_sha256": "1e217e7e678ce37cee5c2b51fbf76429aa0b3b5298e622b1bbcb5363a6969f32",
   "max_unseal_operations": 1,
@@ -26,7 +33,7 @@
     "docs/phase2b_final_test_scientific_interpretation.md"
   ],
   "preregistered_results_commit": "4426bf55476d1761afe15ded4d56d48ded0fee51",
-  "schema_version": "phase2b.8a-v1",
+  "schema_version": "phase2b.8c-v2",
   "sealed_inputs": [
     {
       "analysis_id": "d9e335e0f28b578631975e83442480e59055edab2d2ba340a71a70f44bc93b7f",
@@ -86,6 +93,10 @@
     }
   ],
   "status": "approved",
+  "supersedes_authorization_commit": "3804bac0b10e6e4c9209ae1dabf944051ef67cbf",
+  "supersedes_authorization_sha256": "2fa1686fb5443dab58c6ceb7bf7f1e385b20f85ee45f3ec1203d19d363f9dc92",
+  "supersession_reason": "final_test_reporting_fingerprint changed from baf02763f9b1f3dc5163dbb52069af842aef47de94acfcbca945e2be5d3736be to 2c9ac6b2398db4ef49c28510fdabcb7f0e48a4d046c5614fccd00da271cf8026 because render_interpretation_markdown() was corrected to replace the overbroad 'examined by any person or process' sentence with 'No final-test scientific result was inspected by a human before this controlled unsealing.' (commit 990e5b5e464fb08f5b95a1a3dffc452613e3d925). The only permitted output-content difference between generation 1 and generation 2 is (a) reporting provenance caused by the new authorization/fingerprint and (b) this one frozen sentence -- no scientific value, table, count, effect, interval, p-value, adjusted p-value, classification, limitation, or conclusion may differ.",
   "unsealing_freeze_commit": "486028c3b2e40014a38b3bfc818e113a95d39f9c",
-  "validation_statistical_analysis_fingerprint": "509eca2682075cc5d9e69da4e670b35caade69ebe80dbb8407b10db9a4fb9a01"
+  "validation_statistical_analysis_fingerprint": "509eca2682075cc5d9e69da4e670b35caade69ebe80dbb8407b10db9a4fb9a01",
+  "wording_correction_freeze_commit": "3d8ba37609b71f754e2f43802736b8dab59215f6"
 }
