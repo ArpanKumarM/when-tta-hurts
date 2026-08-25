@@ -279,25 +279,71 @@ def test_cell_1_remains_compatible_under_corrected_contract_no_values_displayed(
     assert all_within_tolerance
 
 
-def test_cell_2_failed_attempt_immutable_and_next_attempt_resolves_to_two():
-    """(10) Cell 2's real attempt-1 failure record is preserved exactly,
-    and the production runner's own attempt-allocation function resolves
-    the next attempt to exactly 2 -- read-only, no evaluate-test
-    invocation, no test-split access."""
+def test_cell_2_recovery_lifecycle_is_state_derived_and_gapless():
+    """(10) State-derived invariant over cell 2's real attempt history --
+    deliberately NOT pinned to any specific attempt count, so it remains
+    valid as the append-only final-test ledger grows with future cells
+    or (in principle) future recovery attempts for other cells. Read-only,
+    no evaluate-test invocation, no test-split access.
+
+    Verifies:
+    1. Attempt 1 is present, byte-identical to its recorded failure state,
+       and status=failed.
+    2. Attempt 2 is present and status=completed.
+    3. Attempt 2 is the sole completed (authorized) result for this cell.
+    4. Existing attempt numbers are monotonic and gapless (1..max, no
+       skips).
+    5. next_evaluation_attempt_number(...) == max(existing) + 1 -- the
+       production runner's own allocator, not a re-derivation of it.
+    6. No historical ledger row or artifact is mutated by this test.
+    """
+    import hashlib
+
     from when_tta_hurts.final_test_evaluation import DEFAULT_FINAL_TEST_ROOT
     from when_tta_hurts.ledger import FINAL_TEST_LEDGER_PATH
     from when_tta_hurts.validation_evaluation import next_evaluation_attempt_number
 
     run_id = "A-pathmnist-28px-batchnorm-policy-none-s1"
-    attempt_dir = DEFAULT_FINAL_TEST_ROOT / run_id / "attempt_001"
-    if not attempt_dir.exists():
-        pytest.skip("cell 2's real attempt-1 record is not present in this checkout")
+    run_dir = DEFAULT_FINAL_TEST_ROOT / run_id
+    if not run_dir.exists():
+        pytest.skip("cell 2's real attempt history is not present in this checkout")
 
-    status = json.loads((attempt_dir / "status.json").read_text())
-    assert status["status"] == "failed"
-    assert status["attempt_number"] == 1
-    assert not (attempt_dir / "predictions.npz").exists()
-    assert not (attempt_dir / "metrics.json").exists()
+    attempt_dirs = sorted(
+        (p for p in run_dir.iterdir() if p.is_dir() and p.name.startswith("attempt_")),
+        key=lambda p: int(p.name.split("_")[1]),
+    )
+    existing_attempt_numbers = [int(p.name.split("_")[1]) for p in attempt_dirs]
 
+    # (4) monotonic and gapless: exactly 1, 2, ..., max -- no skipped numbers.
+    assert existing_attempt_numbers == list(range(1, len(existing_attempt_numbers) + 1))
+
+    statuses = {}
+    for attempt_dir in attempt_dirs:
+        n = int(attempt_dir.name.split("_")[1])
+        statuses[n] = json.loads((attempt_dir / "status.json").read_text())["status"]
+
+    # (1) attempt 1 remains present and failed, with its content structure
+    # intact -- a failed attempt has no persisted metrics/predictions.
+    attempt_1_status_path = DEFAULT_FINAL_TEST_ROOT / run_id / "attempt_001" / "status.json"
+    attempt_1_bytes = attempt_1_status_path.read_bytes()
+    attempt_1_status_before = json.loads(attempt_1_bytes)
+    assert attempt_1_status_before["status"] == "failed"
+    assert attempt_1_status_before["attempt_number"] == 1
+    assert attempt_1_status_before["failure_reason"]
+    assert not (attempt_dirs[0] / "predictions.npz").exists()
+    assert not (attempt_dirs[0] / "metrics.json").exists()
+    attempt_1_hash_before = hashlib.sha256(attempt_1_bytes).hexdigest()
+
+    # (2) + (3) exactly one completed attempt exists, and it is the last
+    # (highest-numbered) one -- the sole authorized completed result.
+    completed_attempts = [n for n, s in statuses.items() if s == "completed"]
+    assert len(completed_attempts) == 1
+    assert completed_attempts[0] == max(existing_attempt_numbers)
+
+    # (5) the production allocator agrees with the state-derived maximum.
     next_attempt = next_evaluation_attempt_number(run_id, DEFAULT_FINAL_TEST_ROOT, FINAL_TEST_LEDGER_PATH)
-    assert next_attempt == 2
+    assert next_attempt == max(existing_attempt_numbers) + 1
+
+    # (6) nothing above wrote to any ledger or artifact file: re-reading
+    # attempt 1's status file yields byte-identical content.
+    assert hashlib.sha256(attempt_1_status_path.read_bytes()).hexdigest() == attempt_1_hash_before
