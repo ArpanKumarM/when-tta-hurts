@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -439,7 +440,7 @@ def test_interpretation_markdown_contains_required_disclosures():
         "No population-level",
         "accidental final-test access incident",
         "shared-aggregation-contract correction",
-        "No scientific result",
+        "inspected by a human before this controlled unsealing",
     ):
         assert phrase in md, f"missing required disclosure: {phrase!r}"
 
@@ -570,3 +571,123 @@ def test_reporting_manifest_disjoint_from_computation_manifests():
         FINAL_TEST_STATISTICAL_ANALYSIS_MANIFEST,
     ):
         assert reporting_only_files.isdisjoint(computation_manifest)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.8C: the one-sentence human-observation wording correction.
+# ---------------------------------------------------------------------------
+
+
+def test_old_person_or_process_phrase_cannot_appear():
+    md = ftsr.render_interpretation_markdown({})
+    assert "examined by any person or process" not in md
+    assert "person or process" not in md
+
+
+def test_approved_human_inspection_sentence_appears_exactly():
+    md = ftsr.render_interpretation_markdown({})
+    assert "No final-test scientific result was inspected by a human before this controlled unsealing." in md
+
+
+def test_only_the_one_sentence_differs_from_generation1_archive():
+    """The archived generation-1 interpretation Markdown must differ from
+    the current generator's output in exactly the one frozen sentence --
+    every other line must be byte-identical."""
+    archive_path = Path("docs/phase2b_final_test_scientific_interpretation_generation_001.md")
+    if not archive_path.exists():
+        pytest.skip("generation-1 archive not present in this checkout")
+    archived_lines = archive_path.read_text().splitlines()
+    current_lines = ftsr.render_interpretation_markdown({}).splitlines()
+
+    old_sentence_lines = [
+        line
+        for line in archived_lines
+        if "examined by any person or process" in line or "person or process" in line
+    ]
+    assert len(old_sentence_lines) >= 1, "generation-1 archive must contain the old sentence"
+
+    archived_without_old = [
+        line for line in archived_lines if line not in old_sentence_lines and line.strip() != ""
+    ]
+    current_without_new = [
+        line
+        for line in current_lines
+        if "inspected by a human before this controlled unsealing" not in line and line.strip() != ""
+    ]
+    assert archived_without_old == current_without_new, (
+        "every non-frozen-sentence line must remain byte-identical between generation 1 and the "
+        "current generator output"
+    )
+
+
+def test_results_markdown_generator_untouched_by_wording_correction(loaded_synthetic):
+    """render_results_markdown() never renders the corrected sentence at
+    all, so its output must be byte-for-byte identical regardless of the
+    wording fix."""
+    resolved, loaded = loaded_synthetic
+    summary = ftsr.build_scientific_summary(resolved, loaded)
+    md1 = ftsr.render_results_markdown(summary)
+    md2 = ftsr.render_results_markdown(summary)
+    assert md1 == md2
+    assert "person" not in md1
+    assert "inspected" not in md1
+
+
+def test_generation1_archive_paths_are_never_treated_as_current_outputs():
+    from when_tta_hurts.final_test_scientific_reporting import (
+        INTERPRETATION_MARKDOWN_PATH,
+        RESULTS_MARKDOWN_PATH,
+        SCIENTIFIC_SUMMARY_PATH,
+    )
+
+    archived_summary = Path(
+        "artifacts/final_test_scientific_unsealing/generation_001/final_test_scientific_summary.json"
+    )
+    archived_results = Path("docs/phase2b_final_test_scientific_results_generation_001.md")
+    archived_interp = Path("docs/phase2b_final_test_scientific_interpretation_generation_001.md")
+
+    assert SCIENTIFIC_SUMMARY_PATH != archived_summary
+    assert RESULTS_MARKDOWN_PATH != archived_results
+    assert INTERPRETATION_MARKDOWN_PATH != archived_interp
+
+
+def test_current_canonical_output_paths_absent_before_generation2():
+    from when_tta_hurts.final_test_scientific_reporting import (
+        INTERPRETATION_MARKDOWN_PATH,
+        RESULTS_MARKDOWN_PATH,
+        SCIENTIFIC_SUMMARY_PATH,
+    )
+
+    # These paths must not exist as a leftover from generation 1 -- they
+    # were moved (git mv) to the archive locations in Phase 2B.8C Part C.
+    assert not SCIENTIFIC_SUMMARY_PATH.exists()
+    assert not RESULTS_MARKDOWN_PATH.exists()
+    assert not INTERPRETATION_MARKDOWN_PATH.exists()
+
+
+def test_correction_freeze_doc_is_in_reporting_manifest():
+    assert (
+        "docs/phase2b_final_test_reporting_wording_correction_freeze.md" in ftsr.FINAL_TEST_REPORTING_MANIFEST
+    )
+
+
+def test_generator_rejects_unexpected_difference_via_conflict_check(tmp_path, monkeypatch):
+    """generate_and_persist_report() must hard-fail (never silently
+    overwrite) when an existing output doesn't match the freshly-rendered
+    content -- this is the mechanism that would catch an unauthorized
+    difference between generation 1 and a would-be generation 2."""
+    ledger_path, analysis_root, cross_root = _build_full_synthetic_repo(tmp_path)
+    _patch_authorizations_ok(monkeypatch)
+    monkeypatch.setattr(
+        ftsr,
+        "resolve_seven_sealed_inputs",
+        lambda: _real_resolve_seven_sealed_inputs(ledger_path, analysis_root, cross_root),
+    )
+
+    summary_path = tmp_path / "summary.json"
+    results_path = tmp_path / "results.md"
+    interp_path = tmp_path / "interpretation.md"
+    summary_path.write_text('{"different": "content"}')
+
+    with pytest.raises(ftsr.ReportGenerationError):
+        ftsr.generate_and_persist_report(summary_path, results_path, interp_path)

@@ -80,6 +80,14 @@ artifacts/*
 # exactly these two files; does not unignore anything else.
 !artifacts/final_test_scientific_summary.json
 !artifacts/final_test_unsealing_authorization.json
+# Phase 2B.8C: archived generation-1 machine-readable scientific summary
+# (byte-identical historical copy, preserved after the generator's one-
+# sentence wording correction). Narrowly scoped to exactly this one
+# archived path -- does not unignore any other file under
+# artifacts/final_test_scientific_unsealing/.
+!artifacts/final_test_scientific_unsealing/
+!artifacts/final_test_scientific_unsealing/generation_001/
+!artifacts/final_test_scientific_unsealing/generation_001/final_test_scientific_summary.json
 
 # Python
 __pycache__/

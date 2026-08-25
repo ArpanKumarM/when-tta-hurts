@@ -74,6 +74,7 @@ FINAL_TEST_REPORTING_MANIFEST: tuple[str, ...] = (
     "src/when_tta_hurts/final_test_scientific_reporting.py",
     "scripts/generate_final_test_scientific_report.py",
     "docs/phase2b_final_test_unsealing_freeze.md",
+    "docs/phase2b_final_test_reporting_wording_correction_freeze.md",
     "src/when_tta_hurts/statistical_analysis_artifacts.py",
     "pyproject.toml",
     "uv.lock",
@@ -525,9 +526,7 @@ def render_interpretation_markdown(summary: dict[str, Any]) -> str:
         "compatibility under its historical generation-3 binding was "
         "independently established via 56/56 recomputation checks, never "
         "assumed.",
-        "- No scientific result from any of the seven sealed artifacts was "
-        "examined by any person or process before this controlled-unsealing "
-        "phase.",
+        "- No final-test scientific result was inspected by a human before this controlled unsealing.",
         "",
     ]
     return "\n".join(lines)
