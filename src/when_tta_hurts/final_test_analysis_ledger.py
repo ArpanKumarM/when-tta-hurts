@@ -165,8 +165,23 @@ def existing_completed_attempt(
     """Returns the attempt number of an already-`completed` row for
     `analysis_id`, or None if none exists. Used to make real-analysis
     entry points idempotent: a prior completed analysis is read back from
-    its persisted artifact rather than recomputed."""
-    for row in _read_existing_rows(ledger_path):
-        if row.get("analysis_id") == analysis_id and row.get("status") == "completed":
-            return int(row["analysis_attempt"])
-    return None
+    its persisted artifact rather than recomputed.
+
+    Phase 2B.7B: if MORE THAN ONE completed row exists for the same
+    analysis_id -- structurally unexpected under normal operation (the
+    idempotent short-circuit prevents a second real computation once one
+    exists), but never to be silently tolerated if ledger corruption or a
+    future bug produces it -- this raises rather than guessing, mirroring
+    every other "ambiguous -> fail closed" rule in this repository."""
+    completed_attempts = [
+        int(row["analysis_attempt"])
+        for row in _read_existing_rows(ledger_path)
+        if row.get("analysis_id") == analysis_id and row.get("status") == "completed"
+    ]
+    if len(completed_attempts) > 1:
+        raise FinalTestAnalysisLedgerConflictError(
+            f"Final-test-analysis ledger has {len(completed_attempts)} CONFLICTING completed rows "
+            f"for analysis_id={analysis_id}: attempts {sorted(completed_attempts)}. Refusing to guess "
+            f"which is canonical -- this must be resolved by hand before any further real analysis."
+        )
+    return completed_attempts[0] if completed_attempts else None

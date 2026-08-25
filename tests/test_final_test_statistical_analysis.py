@@ -573,3 +573,163 @@ def test_plan_report_json_never_contains_forbidden_scientific_keys():
     dumped2 = json.dumps(report2).lower()
     for term in forbidden_substrings:
         assert term not in dumped2, f"plan-mode report leaked forbidden term: {term}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.7B: deterministic bootstrap seeding, semantic-tamper rejection,
+# conflicting-completion ambiguity, sealed stdout/stderr, schema failure.
+# ---------------------------------------------------------------------------
+
+
+def test_derive_final_test_bootstrap_seed_is_pure_and_collision_resistant():
+    s1 = ftsa.derive_final_test_bootstrap_seed("H1", "run-a", "fp-1")
+    s2 = ftsa.derive_final_test_bootstrap_seed("H1", "run-a", "fp-1")
+    assert s1 == s2
+
+    s_other_run = ftsa.derive_final_test_bootstrap_seed("H1", "run-b", "fp-1")
+    s_other_family = ftsa.derive_final_test_bootstrap_seed("H2", "run-a", "fp-1")
+    s_other_fp = ftsa.derive_final_test_bootstrap_seed("H1", "run-a", "fp-2")
+    assert len({s1, s_other_run, s_other_family, s_other_fp}) == 4
+
+
+def _setup_family_fixture(tmp_path, monkeypatch, run_id="run-a", n_samples=30):
+    root = tmp_path / "final_test"
+    ledger = tmp_path / "ledger_final_test.csv"
+    analysis_root = tmp_path / "final_test_analysis"
+    analysis_ledger = tmp_path / "ledger_final_test_analysis.csv"
+
+    _write_synthetic_cell(root, run_id, n_samples=n_samples, n_views=3)
+    authorization = _fake_authorization([run_id])
+    _write_ledger_row(ledger, run_id, authorization.artifact_sha256)
+
+    fake_cell = SimpleNamespace(run_id=run_id, role="primary")
+    monkeypatch.setattr(ftsa, "derive_family_cells", lambda family, matrix_path: [fake_cell])
+    monkeypatch.setattr(ftsa, "FINAL_TEST_ANALYSIS_ROOT", analysis_root)
+    monkeypatch.setattr(
+        ftsa, "ensure_final_test_analysis_ledger_exists", lambda: real_ensure(analysis_ledger)
+    )
+    monkeypatch.setattr(
+        ftsa,
+        "next_final_test_analysis_attempt_number",
+        lambda analysis_id: real_next_attempt(analysis_id, analysis_ledger),
+    )
+    monkeypatch.setattr(
+        ftsa,
+        "existing_completed_attempt",
+        lambda analysis_id: real_existing_completed(analysis_id, analysis_ledger),
+    )
+    monkeypatch.setattr(
+        ftsa, "append_final_test_analysis_entry", lambda **kw: real_append(ledger_path=analysis_ledger, **kw)
+    )
+    return root, ledger, analysis_root, analysis_ledger, authorization
+
+
+def test_semantic_tamper_between_compute_and_reverify_is_rejected(tmp_path, monkeypatch):
+    root, ledger, analysis_root, analysis_ledger, authorization = _setup_family_fixture(tmp_path, monkeypatch)
+
+    real_loader = ftsa._load_final_test_cell_correctness
+    call_count = {"n": 0}
+
+    def _flaky_loader(*args, **kwargs):
+        cell = dict(real_loader(*args, **kwargs))
+        call_count["n"] += 1
+        if call_count["n"] % 2 == 0:
+            # Every second call (the independent re-verification pass)
+            # returns tampered correctness arrays, simulating a
+            # mid-computation divergence bug.
+            cell["clean_correct"] = ~cell["clean_correct"]
+        return cell
+
+    monkeypatch.setattr(ftsa, "_load_final_test_cell_correctness", _flaky_loader)
+
+    with pytest.raises(ftsa.FinalTestAnalysisSemanticVerificationError):
+        ftsa.compute_final_test_family_analysis(
+            "H1", n=2, final_test_root=root, final_test_ledger_path=ledger, _authorization=authorization
+        )
+
+    assert not analysis_root.exists(), "a semantic-verification failure must leave no persisted attempt"
+    assert not analysis_ledger.exists() or real_existing_completed("anything", analysis_ledger) is None
+
+
+def test_conflicting_completed_attempts_raises_ambiguous(tmp_path):
+    from when_tta_hurts.final_test_analysis_ledger import FinalTestAnalysisLedgerConflictError
+
+    ledger_path = tmp_path / "ledger_final_test_analysis.csv"
+    real_ensure(ledger_path)
+    common = dict(
+        analysis_id="dup-id",
+        kind="family",
+        identifier="H1",
+        final_test_analysis_fingerprint="fp",
+        final_test_authorization_sha256="sha",
+        final_test_authorization_commit="commit",
+        current_evaluator_fingerprint="efp",
+        status="completed",
+        primary_artifact_hash="hash-1",
+        started_at=0.0,
+        ended_at=1.0,
+        runtime_seconds=1.0,
+    )
+    real_append(analysis_attempt=1, ledger_path=ledger_path, **common)
+    conflicting = dict(common)
+    conflicting["primary_artifact_hash"] = "hash-2"
+    real_append(analysis_attempt=2, ledger_path=ledger_path, **conflicting)
+
+    with pytest.raises(FinalTestAnalysisLedgerConflictError):
+        real_existing_completed("dup-id", ledger_path)
+
+
+def test_real_analysis_emits_nothing_to_stdout_or_stderr(tmp_path, monkeypatch, capsys):
+    root, ledger, analysis_root, analysis_ledger, authorization = _setup_family_fixture(tmp_path, monkeypatch)
+
+    result = ftsa.compute_final_test_family_analysis(
+        "H1", n=2, final_test_root=root, final_test_ledger_path=ledger, _authorization=authorization
+    )
+    assert result["status"] == "completed"
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_schema_failure_on_empty_family_leaves_no_persisted_attempt(tmp_path, monkeypatch):
+    analysis_root = tmp_path / "final_test_analysis"
+    analysis_ledger = tmp_path / "ledger_final_test_analysis.csv"
+    monkeypatch.setattr(ftsa, "derive_family_cells", lambda family, matrix_path: [])
+    monkeypatch.setattr(ftsa, "FINAL_TEST_ANALYSIS_ROOT", analysis_root)
+    monkeypatch.setattr(
+        ftsa, "ensure_final_test_analysis_ledger_exists", lambda: real_ensure(analysis_ledger)
+    )
+    monkeypatch.setattr(
+        ftsa,
+        "next_final_test_analysis_attempt_number",
+        lambda analysis_id: real_next_attempt(analysis_id, analysis_ledger),
+    )
+    monkeypatch.setattr(
+        ftsa,
+        "existing_completed_attempt",
+        lambda analysis_id: real_existing_completed(analysis_id, analysis_ledger),
+    )
+    monkeypatch.setattr(
+        ftsa, "append_final_test_analysis_entry", lambda **kw: real_append(ledger_path=analysis_ledger, **kw)
+    )
+    authorization = _fake_authorization([])
+
+    with pytest.raises(Exception):
+        ftsa.compute_final_test_family_analysis(
+            "H1",
+            n=2,
+            final_test_root=tmp_path,
+            final_test_ledger_path=tmp_path / "l.csv",
+            _authorization=authorization,
+        )
+    # A schema failure (empty family) must never leave a result artifact
+    # or a ledger row claiming completion, even if an empty attempt
+    # directory was created before validation ran.
+    assert not (analysis_root / "H1" / "attempt_001" / "analysis_result.json").exists()
+    # ensure_final_test_analysis_ledger_exists() may harmlessly create a
+    # header-only ledger file, but no data row may exist -- no completion
+    # was ever claimed.
+    if analysis_ledger.exists():
+        assert real_existing_completed("anything", analysis_ledger) is None
+        assert analysis_ledger.read_text().count("\n") <= 1

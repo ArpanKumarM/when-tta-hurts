@@ -140,6 +140,33 @@ class FinalTestAnalysisInputError(RuntimeError):
     proceeds with a partial family/hypothesis."""
 
 
+class FinalTestAnalysisSemanticVerificationError(RuntimeError):
+    """Phase 2B.7B: raised when an independent recomputation of a
+    statistic from a fresh reload of its persisted input bindings does
+    not exactly match the value about to be persisted. Raised BEFORE any
+    write -- the attempt is never persisted and no ledger row is
+    appended, exactly like a schema or manifest failure. See
+    docs/phase2b_final_test_analysis_verification_freeze.md sec.6/7."""
+
+
+def derive_final_test_bootstrap_seed(identifier: str, run_id: str, analysis_fingerprint: str) -> int:
+    """Deterministic uint64 bootstrap seed for the preregistered final-
+    test family analysis's paired bootstrap CI, mirroring
+    cross_condition_addendum.derive_bootstrap_seed()'s exact discipline:
+    a pure, collision-resistant function of the cell's own identity, so a
+    re-run of the same frozen analysis against the same frozen inputs is
+    always exactly reproducible, and no two distinct cells can
+    accidentally share a seed. `identifier` is the family name
+    (H1/H2/H3/BLOCK_C)."""
+    import hashlib
+    import struct
+
+    digest = hashlib.sha256(
+        f"phase2b7b_final_test_bootstrap_seed{identifier}{run_id}{analysis_fingerprint}".encode()
+    ).digest()
+    return struct.unpack(">Q", digest[:8])[0]
+
+
 # ---------------------------------------------------------------------------
 # Final-test-only canonical identity resolution -- read-only, no
 # predictions.npz/metrics.json access. Requires an already-verified
@@ -451,26 +478,75 @@ def compute_final_test_family_analysis(
         attempt_dir = FINAL_TEST_ANALYSIS_ROOT / family / f"attempt_{existing_attempt:03d}"
         return json.loads((attempt_dir / "analysis_result.json").read_text())
 
-    per_cell_statistics: dict[str, Any] = {}
-    for fc in family_cells:
-        cell = _load_final_test_cell_correctness(
-            fc.run_id, authorization, final_test_root, n, final_test_ledger_path
-        )
-        bootstrap = paired_bootstrap_ci(cell["clean_correct"], cell["tta_correct"], rng=rng)
-        mcnemar = mcnemar_test(cell["clean_correct"], cell["tta_correct"])
-        effects = effect_sizes(cell["clean_correct"], cell["tta_correct"])
-        per_cell_statistics[fc.run_id] = {
-            "bootstrap": bootstrap,
-            "mcnemar": mcnemar,
-            "effect_sizes": effects,
-            "n_samples": int(cell["labels"].shape[0]),
-        }
+    def _compute_all_cell_statistics() -> dict[str, Any]:
+        """Computes every cell's statistics from a FRESH load of its
+        persisted predictions, using the deterministic per-cell bootstrap
+        seed (or the caller-supplied `rng`, for test injection only).
+        Called twice: once for the real computation, once for the
+        independent semantic re-verification below -- both calls execute
+        identical code against identical persisted bytes, so they must
+        agree bit-for-bit."""
+        stats: dict[str, Any] = {}
+        for fc in family_cells:
+            cell = _load_final_test_cell_correctness(
+                fc.run_id, authorization, final_test_root, n, final_test_ledger_path
+            )
+            if rng is not None:
+                cell_rng = rng
+                seed = None
+            else:
+                seed = derive_final_test_bootstrap_seed(family, fc.run_id, final_test_analysis_fp)
+                cell_rng = np.random.default_rng(seed)
+            bootstrap = paired_bootstrap_ci(cell["clean_correct"], cell["tta_correct"], rng=cell_rng)
+            bootstrap["bootstrap_seed"] = seed
+            mcnemar = mcnemar_test(cell["clean_correct"], cell["tta_correct"])
+            effects = effect_sizes(cell["clean_correct"], cell["tta_correct"])
+            stats[fc.run_id] = {
+                "bootstrap": bootstrap,
+                "mcnemar": mcnemar,
+                "effect_sizes": effects,
+                "n_samples": int(cell["labels"].shape[0]),
+            }
+        return stats
 
-    raw_p_values = [per_cell_statistics[fc.run_id]["mcnemar"]["p_value"] for fc in family_cells]
-    definable = [p for p in raw_p_values if p is not None]
-    corrected = benjamini_hochberg(definable) if definable else []
-    corrected_iter = iter(corrected)
-    corrected_p_values = [None if p is None else next(corrected_iter) for p in raw_p_values]
+    def _multiplicity_from(stats: dict[str, Any]) -> tuple[list[float | None], list[float | None]]:
+        raw = [stats[fc.run_id]["mcnemar"]["p_value"] for fc in family_cells]
+        definable = [p for p in raw if p is not None]
+        corrected_vals = benjamini_hochberg(definable) if definable else []
+        corrected_iter = iter(corrected_vals)
+        corrected = [None if p is None else next(corrected_iter) for p in raw]
+        return raw, corrected
+
+    per_cell_statistics = _compute_all_cell_statistics()
+    raw_p_values, corrected_p_values = _multiplicity_from(per_cell_statistics)
+
+    if rng is None:
+        # Independent semantic re-verification (Phase 2B.7B): recompute
+        # everything a second time, from a second fresh reload, and
+        # require exact agreement before any write. Skipped only when the
+        # caller injected a non-deterministic `rng` (test-only path,
+        # never production).
+        verify_stats = _compute_all_cell_statistics()
+        verify_raw, verify_corrected = _multiplicity_from(verify_stats)
+        for fc in family_cells:
+            a, b = per_cell_statistics[fc.run_id], verify_stats[fc.run_id]
+            if a["bootstrap"] != b["bootstrap"]:
+                raise FinalTestAnalysisSemanticVerificationError(
+                    f"Cell {fc.run_id!r}: bootstrap recomputation mismatch on independent "
+                    f"re-verification (seed-derived bootstrap must be bit-for-bit reproducible)."
+                )
+            if a["mcnemar"] != b["mcnemar"]:
+                raise FinalTestAnalysisSemanticVerificationError(
+                    f"Cell {fc.run_id!r}: McNemar recomputation mismatch on independent re-verification."
+                )
+            if a["effect_sizes"] != b["effect_sizes"]:
+                raise FinalTestAnalysisSemanticVerificationError(
+                    f"Cell {fc.run_id!r}: effect-size recomputation mismatch on independent re-verification."
+                )
+        if raw_p_values != verify_raw or corrected_p_values != verify_corrected:
+            raise FinalTestAnalysisSemanticVerificationError(
+                "Benjamini-Hochberg multiplicity correction mismatch on independent re-verification."
+            )
 
     result: dict[str, Any] = {
         "family": family,
@@ -620,18 +696,34 @@ def compute_final_test_hypothesis_did(
         attempt_dir = FINAL_TEST_CROSS_CONDITION_ROOT / hypothesis / f"attempt_{existing_attempt:03d}"
         return json.loads((attempt_dir / "cross_condition_result.json").read_text())
 
-    per_pair_results: dict[str, Any] = {}
-    for p in pairs:
-        per_pair_results[p.pair_id] = compute_final_test_pair_did(
-            p,
-            authorization,
-            final_test_analysis_fp,
-            n=spec["endpoint"]["tta_view_count"],
-            n_resamples=bootstrap_spec["n_resamples"],
-            ci_level=bootstrap_spec["ci_level"],
-            final_test_root=final_test_root,
-            final_test_ledger_path=final_test_ledger_path,
-        )
+    def _compute_all_pairs() -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        for p in pairs:
+            results[p.pair_id] = compute_final_test_pair_did(
+                p,
+                authorization,
+                final_test_analysis_fp,
+                n=spec["endpoint"]["tta_view_count"],
+                n_resamples=bootstrap_spec["n_resamples"],
+                ci_level=bootstrap_spec["ci_level"],
+                final_test_root=final_test_root,
+                final_test_ledger_path=final_test_ledger_path,
+            )
+        return results
+
+    per_pair_results = _compute_all_pairs()
+
+    # Independent semantic re-verification (Phase 2B.7B): recompute every
+    # pair's DiD a second time, from a second fresh reload of both
+    # conditions' predictions, using the same deterministic
+    # derive_bootstrap_seed() -- must agree bit-for-bit before any write.
+    verify_pair_results = _compute_all_pairs()
+    for pair_id in per_pair_results:
+        if per_pair_results[pair_id] != verify_pair_results[pair_id]:
+            raise FinalTestAnalysisSemanticVerificationError(
+                f"Pair {pair_id!r}: DiD recomputation mismatch on independent re-verification "
+                f"(joint-resampling bootstrap must be bit-for-bit reproducible)."
+            )
 
     result: dict[str, Any] = {
         "classification": "post_validation_pre_test_secondary",
