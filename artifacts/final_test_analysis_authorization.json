@@ -1,8 +1,8 @@
 {
-  "approval_timestamp": "2026-08-25T00:00:00Z",
+  "approval_timestamp": "2026-08-26T00:00:00Z",
   "authorized_analyses": [
-    "final_test_preregistered_statistical_analysis",
-    "final_test_cross_condition_addendum"
+    "analyze-preregistered",
+    "analyze-cross-condition"
   ],
   "authorized_cells": [
     {
@@ -241,9 +241,9 @@
     }
   ],
   "evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
-  "final_test_analysis_fingerprint": "bbe529eca523b44ecc149df086b9330950827cba94719ec80c6ad23eea4b453f",
+  "final_test_analysis_fingerprint": "91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc",
   "final_test_closure_commit": "581143e6d1c080c3bfaad941514a356089313926",
-  "final_test_cross_condition_analysis_fingerprint": "bbe529eca523b44ecc149df086b9330950827cba94719ec80c6ad23eea4b453f",
+  "final_test_cross_condition_analysis_fingerprint": "91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc",
   "final_test_runner_fingerprint": "e223dc087917ff8aa0a8093f749b2e528c6b14e3f704206f3baf847ddbbd7834",
   "frozen_cross_condition_addendum_config_sha256": "bf2f1a260c2906d974659f65434babb8a3196fa5ca70948b84219edca36abfc5",
   "frozen_endpoint": {
@@ -255,10 +255,10 @@
   "frozen_statistical_analysis_plan_sha256": "566840a15e11d3fafe4aa781e705e2c8ac005dd21c5c79c93da03bcb74b69fca",
   "generation5_final_test_authorization_commit": "6d68da1dc34c276374cdab133a03b171b8b45381",
   "generation5_final_test_authorization_sha256": "1e217e7e678ce37cee5c2b51fbf76429aa0b3b5298e622b1bbcb5363a6969f32",
-  "schema_version": "phase2b.7b-v2",
+  "schema_version": "phase2b.7c-v3",
   "status": "approved",
-  "supersedes_authorization_commit": "68db8c5f18fb5de414b28a4a8bcd5255f6e542b4",
-  "supersedes_authorization_sha256": "6b94796df62d3778c2a7f566c6e53f2b98d6483442fa299cdfe358219b585db5",
-  "supersession_reason": "final_test_analysis_fingerprint changed from d720d0dbf147804b9cb11e7c1e79bb5b9166fe69fb0f20373418198bb73dad0a to bbe529eca523b44ecc149df086b9330950827cba94719ec80c6ad23eea4b453f due to Phase 2B.7B's semantic-verification/deterministic-seeding/ambiguity-detection engineering (commit b4cdf5b7c90cf7060ac8590621feed118b5c338c).",
+  "supersedes_authorization_commit": "9568d4d30db642a37fbcfc87ac01c81f9f68b11c",
+  "supersedes_authorization_sha256": "51152a79a044a44cec781bac10abd51b9ea64de6e0b4c623392293c60bedccaf",
+  "supersession_reason": "final_test_analysis_fingerprint changed from bbe529eca523b44ecc149df086b9330950827cba94719ec80c6ad23eea4b453f to 91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc because scripts/run_final_test_statistical_analysis.py was added to FINAL_TEST_STATISTICAL_ANALYSIS_MANIFEST (Phase 2B.7C-Engineering commit bb5112c4f7ef6fda3e2f9cf10c770728bfc8d606).",
   "validation_reconciliation_implementation_fingerprint": "1b70509568c79a7cc5162fe01b7ba5ba746763fc889b8e32383d40b61c6a74b3"
 }
