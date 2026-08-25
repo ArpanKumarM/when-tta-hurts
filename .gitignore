@@ -88,6 +88,13 @@ artifacts/*
 !artifacts/final_test_scientific_unsealing/
 !artifacts/final_test_scientific_unsealing/generation_001/
 !artifacts/final_test_scientific_unsealing/generation_001/final_test_scientific_summary.json
+# Phase 2B.9A: downstream, presentation-only paper-evidence figures/
+# tables/manifest, deterministically generated from the sealed
+# generation-2 canonical summary via the isolated tools/paper_evidence
+# toolchain. Narrowly scoped to this one subtree -- does not unignore
+# any other artifacts/ path.
+!artifacts/paper_evidence/
+!artifacts/paper_evidence/**
 
 # Python
 __pycache__/
