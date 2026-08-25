@@ -74,6 +74,12 @@ artifacts/*
 !artifacts/final_test_analysis/**
 !artifacts/final_test_cross_condition/
 !artifacts/final_test_cross_condition/**
+# Phase 2B.8A: the machine-readable scientific summary and the sealed
+# unsealing authorization gate -- same tracked-and-clean-in-git rationale
+# as the other authorization/ledger artifacts above. Narrowly scoped to
+# exactly these two files; does not unignore anything else.
+!artifacts/final_test_scientific_summary.json
+!artifacts/final_test_unsealing_authorization.json
 
 # Python
 __pycache__/
