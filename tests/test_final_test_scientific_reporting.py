@@ -1,10 +1,27 @@
 """Phase 2B.8A: tests for the deterministic final-test scientific-report
 generator. Every test uses fully synthetic fixtures (fabricated JSON
 matching the real schema, in tmp_path) -- NONE read the seven real
-sealed result files. An autouse guard fixture additionally patches the
-real production output paths to explode if a test reaches them
-unpatched, so a forgetful test fails loudly instead of silently writing
-into the real repository.
+sealed result files, and every call into `generate_and_persist_report`
+passes explicit tmp_path-based output paths (never the real production
+defaults). An autouse, session-wide hash-preservation guard fixture
+additionally records the real production output paths' content hashes
+(or absence) before each test and asserts they are byte-identical
+after, so a test that accidentally writes to a real production path
+fails loudly.
+
+Phase 2B.9B correction: the real canonical generation-2 scientific
+outputs (`artifacts/final_test_scientific_summary.json`,
+`docs/phase2b_final_test_scientific_results.md`,
+`docs/phase2b_final_test_scientific_interpretation.md`) were
+intentionally committed to this repository in Phase 2B.8C (commit
+`4a6b264`) as the canonical, sealed evidence base for all downstream
+work. Their existence on disk is a legitimate, permanent repository
+state, not a test-environment leftover -- the guard below was
+originally written (Phase 2B.8A, before unsealing) to assert these
+paths did NOT exist, which made every test in this module fail from
+generation 2 onward even though no test's own logic was ever broken.
+The guard now asserts non-modification instead of non-existence, which
+is the invariant this module actually needs and always needed.
 """
 
 from __future__ import annotations
@@ -25,23 +42,46 @@ _real_resolve_seven_sealed_inputs = ftsr.resolve_seven_sealed_inputs
 # ---------------------------------------------------------------------------
 
 
-class _ProductionPathReachedInTestError(AssertionError):
+class _ProductionPathModifiedInTestError(AssertionError):
     pass
 
 
-def _guard_explode(*args, **kwargs):
-    raise _ProductionPathReachedInTestError(
-        "PRODUCTION PATH REACHED IN TEST: a reporting test attempted to touch a real production "
-        "output path. Pass explicit tmp_path-based paths to every reporting function."
-    )
+_REAL_OUTPUT_PATH_NAMES = ("SCIENTIFIC_SUMMARY_PATH", "RESULTS_MARKDOWN_PATH", "INTERPRETATION_MARKDOWN_PATH")
+
+
+def _real_output_path_hashes() -> dict[str, str | None]:
+    """Content hash of each real production reporting-output path, or
+    None if the path does not exist. The real canonical generation-2
+    outputs legitimately exist in this repository (committed in Phase
+    2B.8C) -- this snapshot only cares whether their bytes change
+    during a test, never whether they are present."""
+    hashes: dict[str, str | None] = {}
+    for name in _REAL_OUTPUT_PATH_NAMES:
+        path = getattr(ftsr, name)
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+    return hashes
 
 
 @pytest.fixture(autouse=True)
-def _guard_real_output_paths(monkeypatch):
-    for name in ("SCIENTIFIC_SUMMARY_PATH", "RESULTS_MARKDOWN_PATH", "INTERPRETATION_MARKDOWN_PATH"):
-        real_path = getattr(ftsr, name)
-        assert not real_path.exists(), f"real production path {real_path} must not exist during tests"
+def _guard_real_output_paths_unchanged():
+    """Session-wide hash-preservation guard (Phase 2B.9B): the real
+    canonical generation-2 scientific-reporting outputs may legitimately
+    exist on disk. No test in this module may modify them -- every test
+    either never touches them, or (for full-pipeline tests) explicitly
+    redirects `generate_and_persist_report` to tmp_path-based output
+    paths. This fixture proves that invariant by hashing the real paths
+    before and after every test and failing loudly on any difference,
+    rather than by asserting the paths are absent (which stopped being
+    true, correctly, once generation 2 was committed as canonical)."""
+    before = _real_output_path_hashes()
     yield
+    after = _real_output_path_hashes()
+    if before != after:
+        raise _ProductionPathModifiedInTestError(
+            f"PRODUCTION PATH MODIFIED IN TEST: a reporting test changed a real production output "
+            f"path's content. before={before} after={after}. Pass explicit tmp_path-based paths to "
+            f"every reporting function that writes output."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +501,7 @@ def _patch_authorizations_ok(monkeypatch):
     monkeypatch.setattr(ftsr, "verify_unsealing_authorization", lambda **kw: {"status": "approved"})
 
 
-def test_authorization_checked_before_any_input_resolution(monkeypatch):
+def test_authorization_checked_before_any_input_resolution(tmp_path, monkeypatch):
     from when_tta_hurts.final_test_statistical_analysis import FinalTestAnalysisAuthorizationError
 
     def _raise():
@@ -473,8 +513,13 @@ def test_authorization_checked_before_any_input_resolution(monkeypatch):
         "resolve_seven_sealed_inputs",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("resolve reached before authorization check")),
     )
+    # Explicit tmp_path-based dummy output paths -- defense in depth so
+    # this test can never reach a real production path even if the
+    # authorization-first ordering under test were broken.
     with pytest.raises(FinalTestAnalysisAuthorizationError):
-        ftsr.generate_and_persist_report()
+        ftsr.generate_and_persist_report(
+            tmp_path / "summary.json", tmp_path / "results.md", tmp_path / "interpretation.md"
+        )
 
 
 def test_full_pipeline_persists_atomically_and_is_idempotent(tmp_path, monkeypatch):
@@ -651,18 +696,32 @@ def test_generation1_archive_paths_are_never_treated_as_current_outputs():
     assert INTERPRETATION_MARKDOWN_PATH != archived_interp
 
 
-def test_current_canonical_output_paths_absent_before_generation2():
+def test_current_canonical_output_paths_match_known_generation2_hashes():
+    """Phase 2B.9B correction: this test originally asserted the current
+    canonical output paths did not exist (true only before generation 2
+    was committed as canonical in Phase 2B.8C, commit `4a6b264`). The
+    true, durable invariant is that -- now that they legitimately exist
+    -- they are exactly the canonical generation-2 artifacts, not
+    generation-1 leftovers or some other stray content. The expected
+    hashes below are not a new measurement: they are copied verbatim
+    from the already-committed, already-verified
+    docs/phase2b_final_test_unsealing_generation2_audit.md sec.3."""
     from when_tta_hurts.final_test_scientific_reporting import (
         INTERPRETATION_MARKDOWN_PATH,
         RESULTS_MARKDOWN_PATH,
         SCIENTIFIC_SUMMARY_PATH,
     )
 
-    # These paths must not exist as a leftover from generation 1 -- they
-    # were moved (git mv) to the archive locations in Phase 2B.8C Part C.
-    assert not SCIENTIFIC_SUMMARY_PATH.exists()
-    assert not RESULTS_MARKDOWN_PATH.exists()
-    assert not INTERPRETATION_MARKDOWN_PATH.exists()
+    expected_sha256 = {
+        SCIENTIFIC_SUMMARY_PATH: "23cc083741e4e16fae232c9fce7d2c4095bc4e40d5897fd7956c550a78e24fce",
+        RESULTS_MARKDOWN_PATH: "d435171ebf4c141ed7a9edad87f7c6ee52e7e316893b4261b142bcf6befbee8a",
+        INTERPRETATION_MARKDOWN_PATH: "92c8861c15b2a0d1254bb319c0aa68921dc85cb9610b26383a75e28ea6a798b8",
+    }
+    for path, expected in expected_sha256.items():
+        if not path.exists():
+            pytest.skip(f"{path} not present in this checkout")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert actual == expected, f"{path} does not match the known canonical generation-2 hash"
 
 
 def test_correction_freeze_doc_is_in_reporting_manifest():
