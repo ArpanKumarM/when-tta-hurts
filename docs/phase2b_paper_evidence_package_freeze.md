@@ -116,10 +116,18 @@ prediction access is needed for any figure or table below.
    map of evidence tiers, not a results table.
 2. **Complete 30-cell unmatched-policy table** -- one row per
    `extract_unmatched_cells()` entry: dataset, resolution, normalization,
-   seed, delta_accuracy, 95% CI, raw McNemar p-value, BH-adjusted p-value
-   (the latter two pulled from whichever family first reports that cell,
-   since the value is identical across families for the same underlying
-   computation).
+   seed, delta_accuracy, 95% CI, raw McNemar p-value (verified
+   family-invariant for a shared cell -- mechanically checked before
+   freezing, since it is the same underlying computation). **Correction
+   (self-caught before any implementation ran against real data): the
+   Benjamini-Hochberg-ADJUSTED p-value is NOT family-invariant** -- a
+   cell belonging to multiple hypothesis families (e.g. an H1/H2-shared
+   cell) has a genuinely different adjusted value in each family's own
+   correction set, per the frozen SAP's per-family BH-FDR design. The
+   table therefore shows one BH-adjusted-p column PER family the cell is
+   a member of (e.g. "BH-adjusted p (H1)", "BH-adjusted p (H2)"), left
+   blank where not applicable -- never collapsing to a single implied
+   canonical value.
 3. **Complete matched-policy table** -- 6 within-cell rows
    (`extract_matched_within_cell()`) plus the 6 corresponding DiD pairs
    (`secondary_cross_condition.H3.pairs`), shown together so the
