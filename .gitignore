@@ -54,6 +54,13 @@ artifacts/*
 !artifacts/ledger_validation_reconciliation.csv
 !artifacts/validation_evaluation_reconciliation/
 !artifacts/validation_evaluation_reconciliation/**
+# Phase 2B.7A final-test-analysis authorization gate -- same tracked-and-
+# clean-in-git rationale as artifacts/final_test_authorization.json above.
+# Does not itself authorize a real analysis run (see
+# docs/phase2b_final_test_analysis_authorization_audit.md); the future
+# real-analysis ledger/result directories stay ignored until that
+# separately-authorized step actually runs.
+!artifacts/final_test_analysis_authorization.json
 
 # Python
 __pycache__/
