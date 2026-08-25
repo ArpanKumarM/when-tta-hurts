@@ -1,0 +1,151 @@
+{
+  "analysis_id": "5bc1e82cc6a07932b0b736c6f8d37396a47ba0be94e59632a1d36d764ddcd6a7",
+  "classification": "post_validation_pre_test_secondary",
+  "cross_condition_analysis_fingerprint": "91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc",
+  "current_evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
+  "hypothesis": "H3",
+  "pairs": [
+    "H3-bloodmnist-s0",
+    "H3-bloodmnist-s1",
+    "H3-bloodmnist-s2",
+    "H3-pathmnist-s0",
+    "H3-pathmnist-s1",
+    "H3-pathmnist-s2"
+  ],
+  "per_pair_results": {
+    "H3-bloodmnist-s0": {
+      "bootstrap": {
+        "bootstrap_seed": 9046024898869167128,
+        "ci_high": 0.3320666471791874,
+        "ci_level": 0.95,
+        "ci_low": 0.29288950599239993,
+        "did": 0.3121894182987431,
+        "n_resamples": 10000,
+        "n_samples": 3421
+      },
+      "condition_a": {
+        "evaluation_id": "bbca1ebde38faf861fa4b7e7d4bb58dc387e18aa7d1738889756c36c122ac5d2",
+        "run_id": "A-bloodmnist-28px-batchnorm-policy-none-s0"
+      },
+      "condition_b": {
+        "evaluation_id": "1d3047c51052b87799d505291f785605c330c508a3af8f0a37b6896f0ceca5a9",
+        "run_id": "B-bloodmnist-28px-batchnorm-policy-matched_mixed-s0"
+      },
+      "hypothesis": "H3",
+      "n_samples": 3421,
+      "pair_id": "H3-bloodmnist-s0"
+    },
+    "H3-bloodmnist-s1": {
+      "bootstrap": {
+        "bootstrap_seed": 14470856255113813463,
+        "ci_high": 0.38409821689564455,
+        "ci_level": 0.95,
+        "ci_low": 0.34463607132417423,
+        "did": 0.36451330020461853,
+        "n_resamples": 10000,
+        "n_samples": 3421
+      },
+      "condition_a": {
+        "evaluation_id": "c78a0d4579ab60b2ca5b51c579e8cfb2f4f444bf3ff981d7402b2e4706c597c6",
+        "run_id": "A-bloodmnist-28px-batchnorm-policy-none-s1"
+      },
+      "condition_b": {
+        "evaluation_id": "3193abd75055e982f7e2f38803f7753859d7b717d0a482d5d8dc1590732d9f52",
+        "run_id": "B-bloodmnist-28px-batchnorm-policy-matched_mixed-s1"
+      },
+      "hypothesis": "H3",
+      "n_samples": 3421,
+      "pair_id": "H3-bloodmnist-s1"
+    },
+    "H3-bloodmnist-s2": {
+      "bootstrap": {
+        "bootstrap_seed": 13268576253975265310,
+        "ci_high": 0.5144694533762058,
+        "ci_level": 0.95,
+        "ci_low": 0.4764688687518269,
+        "did": 0.49576147325343467,
+        "n_resamples": 10000,
+        "n_samples": 3421
+      },
+      "condition_a": {
+        "evaluation_id": "d5545158ddfee68041fd95c95bf991c0cd7c8eb198be10571c7e481a7c4adddf",
+        "run_id": "A-bloodmnist-28px-batchnorm-policy-none-s2"
+      },
+      "condition_b": {
+        "evaluation_id": "17da97945bbd10d2c24d1fe980fa2f9d352f2069ba76b9e3331c13f4024c5a15",
+        "run_id": "B-bloodmnist-28px-batchnorm-policy-matched_mixed-s2"
+      },
+      "hypothesis": "H3",
+      "n_samples": 3421,
+      "pair_id": "H3-bloodmnist-s2"
+    },
+    "H3-pathmnist-s0": {
+      "bootstrap": {
+        "bootstrap_seed": 1810779066829526408,
+        "ci_high": 0.18969359331476324,
+        "ci_level": 0.95,
+        "ci_low": 0.16128133704735376,
+        "did": 0.17548746518105848,
+        "n_resamples": 10000,
+        "n_samples": 7180
+      },
+      "condition_a": {
+        "evaluation_id": "e846df3f5a95fa8745599d1f71809a84ebf86e2fbfbe8bc5aee4c1e4f9b96b20",
+        "run_id": "A-pathmnist-28px-batchnorm-policy-none-s0"
+      },
+      "condition_b": {
+        "evaluation_id": "aa4335001cea248f38149f2819dbd54600ca7290c007ad0ca2a4d2f77d06959e",
+        "run_id": "B-pathmnist-28px-batchnorm-policy-matched_mixed-s0"
+      },
+      "hypothesis": "H3",
+      "n_samples": 7180,
+      "pair_id": "H3-pathmnist-s0"
+    },
+    "H3-pathmnist-s1": {
+      "bootstrap": {
+        "bootstrap_seed": 8507674302219064030,
+        "ci_high": 0.45933147632311977,
+        "ci_level": 0.95,
+        "ci_low": 0.42674094707520893,
+        "did": 0.44317548746518104,
+        "n_resamples": 10000,
+        "n_samples": 7180
+      },
+      "condition_a": {
+        "evaluation_id": "e521fffa6340fb39c39e06b1dbacbccf5661f40ce0521203d91ffdf533d8728f",
+        "run_id": "A-pathmnist-28px-batchnorm-policy-none-s1"
+      },
+      "condition_b": {
+        "evaluation_id": "0fc97c1e3775a7fdebb5a8f2af0a4b74d3529353a2a63ea61bbdae1ce31738f3",
+        "run_id": "B-pathmnist-28px-batchnorm-policy-matched_mixed-s1"
+      },
+      "hypothesis": "H3",
+      "n_samples": 7180,
+      "pair_id": "H3-pathmnist-s1"
+    },
+    "H3-pathmnist-s2": {
+      "bootstrap": {
+        "bootstrap_seed": 3127448399717998130,
+        "ci_high": 0.45571030640668525,
+        "ci_level": 0.95,
+        "ci_low": 0.42590529247910863,
+        "did": 0.4406685236768802,
+        "n_resamples": 10000,
+        "n_samples": 7180
+      },
+      "condition_a": {
+        "evaluation_id": "d53f92ada672a539167bcf68ddd5129c14d90727df0ffbde4e539cc408804ebb",
+        "run_id": "A-pathmnist-28px-batchnorm-policy-none-s2"
+      },
+      "condition_b": {
+        "evaluation_id": "a8122d758cf92e9c7de3d3403ca783b42dea76a3df8215547b5a9b8e62d069e0",
+        "run_id": "B-pathmnist-28px-batchnorm-policy-matched_mixed-s2"
+      },
+      "hypothesis": "H3",
+      "n_samples": 7180,
+      "pair_id": "H3-pathmnist-s2"
+    }
+  },
+  "status": "completed",
+  "test_split_accessed": false
+}

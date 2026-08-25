@@ -1,0 +1,9 @@
+{
+  "artifacts": [
+    {
+      "path": "cross_condition_result.json",
+      "sha256": "f7922b2984aba16c8a5a0833d9f0d500e8bc58a15fedd5529011dc70375f9bf8",
+      "size_bytes": 5282
+    }
+  ]
+}
