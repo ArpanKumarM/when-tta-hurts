@@ -61,6 +61,19 @@ artifacts/*
 # real-analysis ledger/result directories stay ignored until that
 # separately-authorized step actually runs.
 !artifacts/final_test_analysis_authorization.json
+# Phase 2B.7D: the sealed final-test-analysis lifecycle ledger and its
+# completed attempt directories are the analysis deliverable itself
+# (small, opaque-hash-bearing JSON, not bulky predictions/model output --
+# same rationale as artifacts/validation_evaluation_reconciliation/
+# above), tracked once a real analysis has actually completed. Narrowly
+# scoped to exactly these two paths -- does NOT unignore
+# artifacts/final_test/ (per-attempt evaluation predictions.npz/
+# metrics.json, which stay ignored) or any other artifacts/ subtree.
+!artifacts/ledger_final_test_analysis.csv
+!artifacts/final_test_analysis/
+!artifacts/final_test_analysis/**
+!artifacts/final_test_cross_condition/
+!artifacts/final_test_cross_condition/**
 
 # Python
 __pycache__/

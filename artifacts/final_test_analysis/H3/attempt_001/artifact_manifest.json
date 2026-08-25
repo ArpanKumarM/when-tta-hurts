@@ -1,0 +1,9 @@
+{
+  "artifacts": [
+    {
+      "path": "analysis_result.json",
+      "sha256": "f426d1e012dfede44a8a5f26097a63d7ca6317343b334b618a6fb559423e9cca",
+      "size_bytes": 10928
+    }
+  ]
+}

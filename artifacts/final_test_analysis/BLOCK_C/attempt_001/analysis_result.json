@@ -1,0 +1,103 @@
+{
+  "analysis_fingerprint": "91d1556538d6aec0dde4e7be81810035973d0bc9176a73ed8913d4fbe4ba0edc",
+  "analysis_id": "360f3bf01727fcdade1425480e7a62a001f9684b28b10bbdba8904de6f1e643f",
+  "cells": [
+    "C-dermamnist-28px-resnet18-batchnorm-policy-none-s0",
+    "C-dermamnist-28px-resnet18-batchnorm-policy-none-s1",
+    "C-dermamnist-28px-resnet18-batchnorm-policy-none-s2"
+  ],
+  "current_evaluator_fingerprint": "e1d53eeac1030e841f78898ef70832e057d15aa477664ae9ac61984488af6bc2",
+  "family": "BLOCK_C",
+  "multiplicity": {
+    "corrected_p_values": [
+      1.0,
+      1.726784955586321e-06,
+      1.0
+    ],
+    "method": "benjamini_hochberg",
+    "raw_p_values": [
+      0.7510761939618538,
+      5.755949851954403e-07,
+      1.0
+    ]
+  },
+  "per_cell_statistics": {
+    "C-dermamnist-28px-resnet18-batchnorm-policy-none-s0": {
+      "bootstrap": {
+        "bootstrap_seed": 7702874108069711248,
+        "ci_high": 0.014463840399002503,
+        "ci_level": 0.95,
+        "ci_low": -0.009476309226932655,
+        "delta_accuracy": 0.0024937655860348684,
+        "n_resamples": 10000,
+        "n_samples": 2005
+      },
+      "effect_sizes": {
+        "delta_accuracy": 0.0024937655860348684,
+        "harm_rate": 0.05295735900962861,
+        "rescue_rate": 0.14882032667876588
+      },
+      "mcnemar": {
+        "b": 77,
+        "c": 82,
+        "method": "continuity_corrected_chi_square",
+        "n_discordant": 159,
+        "p_value": 0.7510761939618538,
+        "statistic": 0.10062893081761007
+      },
+      "n_samples": 2005
+    },
+    "C-dermamnist-28px-resnet18-batchnorm-policy-none-s1": {
+      "bootstrap": {
+        "bootstrap_seed": 18423129121683055617,
+        "ci_high": -0.01795511221945134,
+        "ci_level": 0.95,
+        "ci_low": -0.0403990024937656,
+        "delta_accuracy": -0.028927680798005007,
+        "n_resamples": 10000,
+        "n_samples": 2005
+      },
+      "effect_sizes": {
+        "delta_accuracy": -0.028927680798005007,
+        "harm_rate": 0.06425153793574846,
+        "rescue_rate": 0.06642066420664207
+      },
+      "mcnemar": {
+        "b": 94,
+        "c": 36,
+        "method": "continuity_corrected_chi_square",
+        "n_discordant": 130,
+        "p_value": 5.755949851954403e-07,
+        "statistic": 24.99230769230769
+      },
+      "n_samples": 2005
+    },
+    "C-dermamnist-28px-resnet18-batchnorm-policy-none-s2": {
+      "bootstrap": {
+        "bootstrap_seed": 204995360263658322,
+        "ci_high": 0.016458852867830442,
+        "ci_level": 0.95,
+        "ci_low": -0.014962593516209544,
+        "delta_accuracy": 0.0004987531172069293,
+        "n_resamples": 10000,
+        "n_samples": 2005
+      },
+      "effect_sizes": {
+        "delta_accuracy": 0.0004987531172069293,
+        "harm_rate": 0.09078498293515358,
+        "rescue_rate": 0.24814814814814815
+      },
+      "mcnemar": {
+        "b": 133,
+        "c": 134,
+        "method": "continuity_corrected_chi_square",
+        "n_discordant": 267,
+        "p_value": 1.0,
+        "statistic": 0.0
+      },
+      "n_samples": 2005
+    }
+  },
+  "status": "completed",
+  "test_split_accessed": false
+}
