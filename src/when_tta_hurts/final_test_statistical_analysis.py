@@ -84,15 +84,72 @@ from when_tta_hurts.statistical_analysis_artifacts import (
 FINAL_TEST_ANALYSIS_ROOT = Path("artifacts/final_test_analysis")
 FINAL_TEST_CROSS_CONDITION_ROOT = Path("artifacts/final_test_cross_condition")
 
+# Phase 2B.7C-Engineering: the CLI script is analysis-identity/lifecycle
+# relevant (it decides which analysis is dispatched and how authorization
+# is checked), so it belongs in THIS manifest only -- never in
+# ANALYSIS_FINGERPRINT_MANIFEST, CROSS_CONDITION_ADDENDUM_MANIFEST, or
+# FINAL_TEST_RUNNER_MANIFEST directly (that would cascade into the
+# evaluator/cross-condition/runner fingerprints and invalidate the
+# generation-5 final-test authorization -- see
+# docs/phase2b_final_test_analysis_cli_freeze.md sec.10).
 FINAL_TEST_STATISTICAL_ANALYSIS_MANIFEST: tuple[str, ...] = FINAL_TEST_RUNNER_MANIFEST + (
     "src/when_tta_hurts/final_test_statistical_analysis.py",
     "src/when_tta_hurts/final_test_analysis_ledger.py",
+    "scripts/run_final_test_statistical_analysis.py",
 )
+
+FINAL_TEST_ANALYSIS_AUTHORIZATION_PATH = Path("artifacts/final_test_analysis_authorization.json")
 
 
 class FinalTestAnalysisFingerprintError(RuntimeError):
     """Raised when a file listed in FINAL_TEST_STATISTICAL_ANALYSIS_MANIFEST
     is missing. Fails closed -- never computes a partial fingerprint."""
+
+
+class FinalTestAnalysisAuthorizationError(RuntimeError):
+    """Phase 2B.7C-Engineering: raised by
+    verify_final_test_analysis_authorization() when the dedicated
+    final-test-ANALYSIS authorization artifact (distinct from the
+    final-test-EVALUATION authorization one layer below) is missing,
+    malformed, not approved, or bound to a stale
+    final_test_analysis_fingerprint. This is the CLI's first gate,
+    checked before either real-analysis function (which independently
+    also verifies the final-test-evaluation authorization as their own
+    first action) is ever called."""
+
+
+def verify_final_test_analysis_authorization(
+    authorization_path: str | Path = FINAL_TEST_ANALYSIS_AUTHORIZATION_PATH,
+) -> dict[str, Any]:
+    """Fast, content-only gate (no git subprocess calls) for the
+    dedicated final-test-analysis authorization artifact. Raises
+    FinalTestAnalysisAuthorizationError on any of: missing file,
+    malformed JSON, status != 'approved', or a recorded
+    final_test_analysis_fingerprint that does not match the CURRENT
+    fingerprint. Returns the parsed authorization dict on success. Never
+    opens predictions.npz/metrics.json; never accesses git."""
+    path = Path(authorization_path)
+    if not path.exists():
+        raise FinalTestAnalysisAuthorizationError(
+            f"Final-test-analysis authorization artifact {path} does not exist."
+        )
+    try:
+        raw = json.loads(path.read_text())
+    except Exception as e:
+        raise FinalTestAnalysisAuthorizationError(
+            f"Final-test-analysis authorization artifact {path} is malformed JSON."
+        ) from e
+    if not isinstance(raw, dict) or raw.get("status") != "approved":
+        raise FinalTestAnalysisAuthorizationError(
+            f"Final-test-analysis authorization artifact {path} is not status='approved'."
+        )
+    current_fp, _ = compute_final_test_analysis_fingerprint()
+    if raw.get("final_test_analysis_fingerprint") != current_fp:
+        raise FinalTestAnalysisAuthorizationError(
+            "Final-test-analysis authorization's final_test_analysis_fingerprint does not match the "
+            "current fingerprint -- authorization is stale."
+        )
+    return raw
 
 
 def compute_final_test_analysis_fingerprint(
@@ -728,6 +785,7 @@ def compute_final_test_hypothesis_did(
     result: dict[str, Any] = {
         "classification": "post_validation_pre_test_secondary",
         "hypothesis": hypothesis,
+        "analysis_id": analysis_id,
         "cross_condition_analysis_fingerprint": final_test_analysis_fp,
         "current_evaluator_fingerprint": authorization.evaluator_fingerprint,
         "pairs": [p.pair_id for p in pairs],
@@ -780,12 +838,16 @@ def _persist_final_test_cross_condition_analysis(
 
 
 __all__ = [
+    "FINAL_TEST_ANALYSIS_AUTHORIZATION_PATH",
     "FINAL_TEST_STATISTICAL_ANALYSIS_MANIFEST",
+    "FinalTestAnalysisAuthorizationError",
     "FinalTestAnalysisFingerprintError",
     "FinalTestAnalysisInputError",
+    "FinalTestAnalysisSemanticVerificationError",
     "KNOWN_HISTORICAL_AUTHORIZATION_SHA256_BY_RUN_ID",
     "compute_final_test_analysis_fingerprint",
     "resolve_final_test_canonical_evaluation_identity",
+    "verify_final_test_analysis_authorization",
     "plan_final_test_statistical_analysis",
     "plan_final_test_cross_condition_addendum",
     "compute_final_test_family_analysis",
