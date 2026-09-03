@@ -1,99 +1,99 @@
-# When TTA Hurts: A Causal Audit of Test-Time Augmentation in Medical Imaging
+# When Test-Time Augmentation Hurts: A Controlled Study in Medical Image Classification
 
-**Status: Planning / pre-registration stage (Phase 0). No experiments have
-been run. No results exist. Nothing in this repository should be treated as
-a finding.**
-
-## What this is
-
-This project reproduces and extends a specific empirical claim from a
-recent preprint:
+An independent, **preregistered**, fully audited reproduction and
+mechanistic characterization of a specific empirical claim from a recent
+preprint:
 
 > *"I Can't Believe TTA Is Not Better: When Test-Time Augmentation Hurts
-> Medical Image Classification"* — arXiv:2604.09697 (April 2026, preprint —
-> **not peer-reviewed**; see `docs/literature_review.md`).
+> Medical Image Classification"* — arXiv:2604.09697 (April 2026,
+> single-author preprint, **not peer-reviewed**).
 
-That paper reports that test-time augmentation (TTA) *reduced* accuracy in
-11 of 12 model-dataset combinations tested on MedMNIST datasets. This
-project investigates *why*, and whether a simple validation-gated fallback
-mechanism can reduce the harm.
+That preprint reports that naive test-time augmentation (TTA) *reduced*
+accuracy in 11 of 12 model/dataset combinations on MedMNIST. This project
+independently verifies that claim on a preregistered confirmatory matrix,
+characterizes how far the harm extends (normalization, resolution,
+view count, aggregation rule), asks whether training/test augmentation-
+policy matching mitigates it, and — in a post-review extension — localizes
+the effect: it is a failure of augmentation robustness (a content-
+preserving geometric-only policy causes it too), not a consequence of the
+augmentation destroying labeled content.
 
-This project does **not** claim to have invented test-time augmentation,
-selective/adaptive TTA, or validation-based TTA gating — see
-`docs/claims_and_risks.md` for an explicit novelty positioning against
-prior work (Shanmugam et al. 2021, Lyzhov et al. 2020, learned-loss TTA,
-BayTTA, and others).
+The manuscript is in [`paper/manuscript.md`](paper/manuscript.md); the
+TMLR-formatted build is in [`paper/tmlr/`](paper/tmlr/).
+
+---
+
+## For reviewers — start here
+
+| To check… | Look at |
+|---|---|
+| **What was preregistered, and when** | [`docs/research_plan.md`](docs/research_plan.md) and [`docs/phase2b_protocol.md`](docs/phase2b_protocol.md); frozen in git history (Phase 0 = commit `a22db01`; the test split was not accessed until a later, separately authorized step) |
+| **The manuscript** | [`paper/manuscript.md`](paper/manuscript.md) (prose) / [`paper/tmlr/main.tex`](paper/tmlr/main.tex) (build: `cd paper/tmlr && make`) |
+| **That every number in the paper is real** | `uv run python3 paper/verify_manuscript_claims.py` — cross-checks every numeric claim in Results **and** the post-review "Extended Analyses" section against the sealed evidence artifacts; exits non-zero on any mismatch |
+| **The primary result's evidence** | [`artifacts/final_test_scientific_summary.json`](artifacts/final_test_scientific_summary.json) (hash-bound) and [`artifacts/paper_evidence/`](artifacts/paper_evidence/) (figures + tables + manifest) |
+| **The post-review extension** | protocols [`docs/phase2c_secondary_analysis_expansion_plan.md`](docs/phase2c_secondary_analysis_expansion_plan.md), [`docs/phase2c2_label_preservation_audit_protocol.md`](docs/phase2c2_label_preservation_audit_protocol.md), [`docs/phase2c2_component_ablation_addendum.md`](docs/phase2c2_component_ablation_addendum.md); results `docs/phase2c*_findings.md`; artifacts `artifacts/{secondary_analysis_expansion,label_preservation_audit,component_ablation}/` |
+| **Citation provenance** | [`paper/citation_audit.md`](paper/citation_audit.md) — every cited work, the primary source fetched, what was verified |
+| **A fast one-command reproduction of the headline numbers** | the companion repo `when-tta-hurts-minimal` (`reproduce.py`) — covers the primary matrix and the secondary conditions; the label-preservation audit and component ablation are reproduced from this repo |
+
+### About the `docs/` directory
+
+`docs/` has ~90 files because every protocol freeze, authorization step,
+and process incident is written down and committed rather than kept as
+tribal knowledge — that append-only record *is* the reproducibility
+contribution. You do not need to read them all: the table above lists the
+handful that matter. The rest are the audit trail, browsable if you want
+to check a specific claim about the process.
+
+---
 
 ## What this is not
 
-- **Not clinically validated.** This project uses [MedMNIST](https://medmnist.com/),
-  which is explicitly not intended for clinical use. Nothing produced by
-  this project should be interpreted as diagnostic, clinically validated,
-  or deployment-ready.
-- **Not a claim of novelty for TTA or adaptive TTA itself.** See
-  `docs/claims_and_risks.md`.
-- **Not associated with, or a critique targeted at, the authors of the
-  source preprint.** This is an independent reproduction and extension
-  effort, in the normal spirit of scientific replication.
-
-## Pre-registered hypotheses
-
-Four hypotheses (H1–H4) covering normalization, resolution, augmentation
-policy matching, and validation-gated TTA are pre-registered in
-`docs/research_plan.md`, along with a critical evaluation of each
-hypothesis's wording and limitations.
+- **Not clinically validated.** Uses [MedMNIST](https://medmnist.com/),
+  which is explicitly not intended for clinical use. Nothing here is
+  diagnostic, clinically validated, or deployment-ready.
+- **Not a novelty claim for TTA, adaptive TTA, or TTA gating.** This is a
+  replication + characterization study; it proposes no new method,
+  aggregator, adaptation procedure, estimator, benchmark, or bound. See
+  the manuscript's Related Work.
+- **Not a critique of the source preprint's authors.** Independent
+  replication in the normal spirit of scientific practice.
 
 ## Repository structure
 
 ```
-docs/     research plan, literature review, protocol, statistics, compute
-          budget, claims table, data/licensing notes
-configs/  machine-readable experiment configuration (draft, unapproved)
-data/     dataset placeholder — data is downloaded at runtime, git-ignored
-results/  results placeholder — no results exist yet
-paper/    placeholder for an eventual 4-6 page technical report
-src/      when_tta_hurts package: config, devices, reproducibility, data,
-          models, transforms, evaluation, artifacts (Phase 1)
-tests/    offline unit tests (no dataset download required)
-scripts/  smoke_test.py, verify_reproducibility.py
-CLAUDE.md rules of engagement for AI-assisted work in this repo
+paper/       manuscript (Markdown), references + citation audit,
+             verify_manuscript_claims.py, reviews/, and tmlr/ (LaTeX build)
+docs/        preregistration, protocol, statistical analysis plan, the
+             Phase 2B audit trail, and the Phase 2C/2C.2 extension protocols
+configs/     frozen machine-readable experiment configuration
+src/         when_tta_hurts package: data, models, transforms, evaluation,
+             statistics, sealed-pipeline / authorization / artifact plumbing
+scripts/     analysis + figure-generation entry points (expand_secondary_analysis.py,
+             label_preservation_audit.py, component_ablation.py, md_to_tex.py, ...)
+artifacts/   sealed scientific summary, paper-evidence package, ledgers, and
+             the Phase 2C summary/CSV deliverables (large per-run predictions,
+             checkpoints, and view renders are git-ignored / regenerated)
+tests/       offline unit tests
+data/        MedMNIST cache — downloaded at runtime, git-ignored
 ```
 
-## Reproducibility commitments
+## Reproducing
 
-- **Implemented (Phase 1):** fixed seeds (`reproducibility.py`),
-  machine-readable configs + content hashing (`config.py`), captured
-  environment/hardware manifest (`devices.py`), dataset checksum
-  verification (`data.py`), an engineering smoke test
-  (`scripts/smoke_test.py`), and same-device reproducibility verification
-  (`scripts/verify_reproducibility.py`).
-- **Planned (Phase 2+):** append-only run ledger with failed runs never
-  deleted (`artifacts.py` has the primitive; not yet wired into a real run
-  loop), raw per-sample predictions saved, all headline metrics generated
-  by scripts reading `results/` — never hand-typed, a strict
-  train/validation-vs-test firewall (`docs/experimental_protocol.md`), and
-  a single-command small reproduction / final approved experiment matrix.
+```bash
+uv sync
+uv run python3 paper/verify_manuscript_claims.py          # check every paper number
+uv run python scripts/expand_secondary_analysis.py        # scaling curve + secondary conditions
+uv run python scripts/label_preservation_audit.py --with-human   # (human_scores.csv committed)
+uv run python scripts/component_ablation.py               # geometric/intensity decomposition (~2.5 h, resumable)
+```
 
-## Current status
-
-- **Phase 0 (preregistration) is frozen** in commit `a22db01` ("docs:
-  preregister TTA causality study"). Hypotheses, protocol, and claims
-  discipline are locked as of that snapshot; later changes are amendments,
-  not silent rewrites — see `CLAUDE.md`.
-- **Phase 1 (engineering infrastructure) is implemented**: a `uv`-managed,
-  src-layout Python package (`src/when_tta_hurts/`) with device selection,
-  reproducibility utilities, dataset loading via the official `medmnist`
-  package, model and transform building blocks, a cache-key primitive, and
-  an engineering smoke test — see `docs/research_plan.md` for phase
-  definitions and the Phase 1 completion report for what was verified.
-- **No pilot or research experiment has run.** No research results exist
-  yet — the smoke test explicitly prints "Engineering smoke test — not an
-  experimental result" and reports no accuracy.
-- This project remains **not intended for clinical use** (see
-  `docs/data_and_licensing.md`).
+Training and final-test evaluation require the sealed pipeline and its
+authorization artifacts (`docs/phase2b_*`); the analysis scripts above run
+from the already-sealed predictions / trained checkpoints and do not
+re-open the test split.
 
 ## License
 
-Original code and text in this repository are MIT-licensed (see `LICENSE`).
-This does **not** extend to the MedMNIST dataset or the cited papers, which
-retain their own license/copyright status — see `docs/data_and_licensing.md`.
+Original code and text are MIT-licensed (see `LICENSE`). This does **not**
+extend to the MedMNIST dataset or the cited papers, which keep their own
+license/copyright — see `docs/data_and_licensing.md`.
