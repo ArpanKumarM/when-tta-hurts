@@ -1,10 +1,12 @@
 \documentclass{article}
 
 % ===========================================================================
-% ANONYMIZED build for TMLR / OpenReview double-blind review.
-% For the arXiv / camera-ready named build, use main-preprint.tex instead.
+% NAMED preprint build for arXiv (and the eventual camera-ready).
+% For the anonymized TMLR / OpenReview submission, use main.tex instead.
 % ===========================================================================
-\usepackage{tmlr}
+\usepackage[preprint]{tmlr}
+\def\month{09}
+\def\year{2026}
 
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
@@ -18,12 +20,16 @@
 
 \title{When Test-Time Augmentation Hurts:\\A Controlled Study in Medical Image Classification}
 
-\author{Anonymous}
+\author{%
+  Arpan Kumar Mahapatra \\
+  Independent Researcher \\
+  \texttt{arpan.arpan.mohapatra@gmail.com}
+}
 
 \begin{document}
 \maketitle
 
-\input{body-anon}
+\input{body}
 
 \bibliographystyle{tmlr}
 \bibliography{references}

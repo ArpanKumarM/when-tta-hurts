@@ -26,13 +26,24 @@ make pdf        # just re-run LaTeX
 Requires TinyTeX / TeX Live on `PATH` and `uv`. First build may need:
 `tlmgr install eso-pic`.
 
-## Submission vs. preprint
+## Two builds
 
-`main.tex` loads `\usepackage{tmlr}` (anonymized: "Anonymous authors /
-Paper under double-blind review", "Under review as submission to TMLR").
-For the arXiv / camera-ready preprint, switch to
-`\usepackage[preprint]{tmlr}`, set `\month`/`\year`, and fill the real
-`\author{...}` block.
+| file | for | authorship | code line |
+|---|---|---|---|
+| `main.tex` + `body-anon.tex` | **TMLR / OpenReview** double-blind submission | "Anonymous authors" | "released upon acceptance" |
+| `main-preprint.tex` + `body.tex` | **arXiv** / camera-ready | Arpan Kumar Mahapatra, Independent Researcher | live GitHub URLs |
+
+```
+make tmlr        # -> main.pdf          (anonymized)
+make arxiv       # -> main-preprint.pdf (named)
+make tarballs    # -> arxiv-submission.tar.gz + tmlr-submission.tar.gz
+```
+
+`body-anon.tex` is generated from `body.tex` by
+`scripts/md_to_tex.py --anon`, which swaps only the "Code and data"
+paragraph. Both tarballs bundle the style files, `references.bib`, the
+8 figure PDFs, and a precompiled `.bbl`, and have been verified to
+compile clean-room.
 
 ## Consistency check
 

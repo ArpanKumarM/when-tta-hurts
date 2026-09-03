@@ -150,6 +150,12 @@ than a consequence of the augmentation destroying labeled content.
 (v) A public release of the full evidence, audit trail, and a
 standalone one-command reproduction.
 
+**Code and data.** All code, the sealed evidence package, and the
+complete preregistration and audit trail are available at
+https://github.com/ArpanKumarM/when-tta-hurts ; a compact one-command
+reproduction of the primary results is at
+https://github.com/ArpanKumarM/when-tta-hurts-minimal .
+
 ## Related Work
 
 **TTA can flip correct predictions to incorrect even when net accuracy

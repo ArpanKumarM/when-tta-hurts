@@ -88,6 +88,8 @@ def inline(s: str) -> str:
         return stash(r"\citep{" + ",".join(keys) + "}")
 
     s = re.sub(r"\[@[A-Za-z0-9_]+(?:;\s*@[A-Za-z0-9_]+)*\]", cite, s)
+    # bare URLs -> \url{} (before escaping, so _ and / survive)
+    s = re.sub(r"https?://[^\s)]+", lambda m: stash(r"\url{" + m.group(0).rstrip(".,;") + "}"), s)
     # inline code
     s = re.sub(r"`([^`]+)`", lambda m: stash(r"\texttt{" + esc_code(m.group(1)) + "}"), s)
     # bold / italic
@@ -283,6 +285,36 @@ Any model-population or general medical-imaging generalization & None --- three 
     return "\n\n".join(out) + "\n"
 
 
+_ANON_CODE_PARA = (
+    r"\textbf{Code and data.} All code, the sealed evidence package, and "
+    r"the complete preregistration and audit trail will be released publicly "
+    r"upon acceptance; the URLs are omitted here for double-blind review."
+)
+
+
+def anonymize(body: str) -> str:
+    """Replace the Code-and-data paragraph (which carries identifying
+    GitHub URLs) with a review-safe placeholder."""
+    new, n = re.subn(
+        r"\\textbf\{Code and data\.\}.*?(?=\n\n)",
+        lambda _m: _ANON_CODE_PARA,
+        body,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if n != 1:
+        raise RuntimeError("anonymize(): Code-and-data paragraph not found / not unique")
+    return new
+
+
 if __name__ == "__main__":
-    OUT.write_text(convert())
-    print(f"wrote {OUT}  ({len(OUT.read_text().splitlines())} lines)")
+    import sys
+
+    body = convert()
+    if "--anon" in sys.argv:
+        out = REPO / "paper" / "tmlr" / "body-anon.tex"
+        out.write_text(anonymize(body))
+    else:
+        out = OUT
+        out.write_text(body)
+    print(f"wrote {out}  ({len(out.read_text().splitlines())} lines)")

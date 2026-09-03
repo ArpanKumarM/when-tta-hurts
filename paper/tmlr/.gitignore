@@ -9,3 +9,6 @@ main.pdf
 b.log
 lm.log
 build.log
+main-preprint.pdf
+*.tar.gz
+_pkg/
