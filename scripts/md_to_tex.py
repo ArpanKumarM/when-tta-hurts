@@ -47,7 +47,41 @@ def stash(tex: str) -> str:
     return key
 
 
+# Textual "Author (year)" / "(Author, year)" mentions that also carry a
+# redundant [@key] in the same paragraph: collapse to a single \citet /
+# \citep so the work is cited once. Only single-key [@key] markers are
+# touched; multi-key [@a; @b] markers are left alone.
+_TEXTUAL_CITE = [
+    (re.compile(r"\bMedeiros \(2026\)"), "medeiros2026tta", "t"),
+    (re.compile(r"\bShanmugam et al\.? \(2021\)"), "shanmugam2021better", "t"),
+    (re.compile(r"\bLyzhov et al\.? \(2020\)"), "lyzhov2020greedy", "t"),
+    (re.compile(r"\bKim et al\.? \(2020\)"), "kim2020learning", "t"),
+    (re.compile(r"\bSherkatghanad et al\.? \(2024\)"), "sherkatghanad2024baytta", "t"),
+    (re.compile(r"\bDi Salvo et al\.? \(2024\)"), "disalvo2024medmnistc", "t"),
+    (re.compile(r"\bSchneider et al\.? \(2020\)"), "schneider2020improving", "t"),
+    (re.compile(r"\bAyhan and Berens \(2018\)"), "ayhan2018ttaug", "t"),
+    (re.compile(r"\bKimura \(2024\)"), "kimura2024understanding", "t"),
+    (re.compile(r"\(Wu (?:&|\\&) He, 2018\)"), "wu2018group", "p"),
+    (re.compile(r"\(Wang et al\.?, 2021\)"), "wang2021tent", "p"),
+]
+
+
+def collapse_textual_cites(p: str) -> str:
+    present = set(re.findall(r"\[@([A-Za-z0-9_]+)\]", p))  # single-key markers only
+    for rx, key, kind in _TEXTUAL_CITE:
+        if key not in present:
+            continue
+        if not rx.search(p):
+            continue
+        p = rx.sub(stash(rf"\cite{kind}{{{key}}}"), p, count=1)
+        p = p.replace(f" [@{key}]", "", 1).replace(f"[@{key}]", "", 1)
+        p = re.sub(r" +([.,;])", r"\1", p)   # space left before punctuation
+        p = re.sub(r"  +", " ", p)            # doubled space
+    return p
+
+
 def inline(s: str) -> str:
+    s = collapse_textual_cites(s)
     # citations first: [@k], [@k1; @k2; @k3]
     def cite(m: re.Match) -> str:
         keys = re.findall(r"@([A-Za-z0-9_]+)", m.group(0))
@@ -184,6 +218,50 @@ def convert() -> str:
     for anchor, block in FIGS:
         for idx, b in enumerate(blocks):
             if anchor in b and not b.startswith("\\begin{figure"):
+                blocks.insert(idx, block)
+                break
+
+    TABLES = [
+        ("reproduced from the committed evidence package", r"""\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}p{2.6cm}p{3.4cm}p{2.4cm}p{4.4cm}@{}}
+\toprule
+\textbf{Evidence tier} & \textbf{Source} & \textbf{Cells / pairs} & \textbf{Confirmatory?} \\
+\midrule
+Preregistered within-cell & H1/H2/H3/BLOCK\_C & 39 unique cells & Yes --- clean-vs-TTA, within one trained model \\
+Secondary fixed-model comparison & Cross-condition H1/H2/H3 & 30 pairs (12+12+6) & No --- post-validation / pre-test-specified, never preregistered \\
+Descriptive summary & Preregistered seed-level groupings & 13 dataset $\times$ resolution $\times$ normalization groups & No --- non-inferential, no p-value / CI of its own \\
+Unsupported / forbidden & H4; pooled or model-population verdicts; secondary significance labels & N/A & Never permitted anywhere in this package \\
+\bottomrule
+\end{tabular}
+\caption{\textbf{Experimental-design and evidence-classification map}, referenced throughout Results and Discussion. Reproduced from the committed evidence package.}
+\label{tab:design}
+\end{table}"""),
+        ("claim adjudication) summarizes", r"""\setcounter{table}{6}
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}p{4.6cm}p{4.0cm}p{4.4cm}@{}}
+\toprule
+\textbf{Claim} & \textbf{Evidence tier} & \textbf{Status} \\
+\midrule
+Naive TTA harmed all 30 distinct unmatched-policy base cells & Preregistered within-cell & Supported \\
+Matched-policy training mitigates TTA harm & Secondary fixed-model DiD, descriptively corroborated by separate within-cell patterns & Supported only secondarily / descriptively --- not a preregistered cross-condition test \\
+Normalization changes the magnitude of harm & Secondary fixed-model DiD only & Supported only secondarily; direction is dataset-dependent \\
+Higher resolution reduces TTA harm & Secondary fixed-model DiD only & Contradicted for BloodMNIST; mixed / near-null for PathMNIST \\
+BLOCK\_C reproduces the source paper's positive TTA improvement & Preregistered within-cell (positive control) & Contradicted --- expected improvement not reproduced in any seed \\
+Any H4 (Validation-Gated TTA) verdict & None --- no derivable family exists & Not made, anywhere \\
+Any model-population or general medical-imaging generalization & None --- three seeds, fixed policy / budget & Not permitted, anywhere \\
+\bottomrule
+\end{tabular}
+\caption{\textbf{Claim adjudication.} Each headline statement, the tier of evidence behind it, and its status. Reproduced from the committed evidence package.}
+\label{tab:claims}
+\end{table}"""),
+    ]
+    for anchor, block in TABLES:
+        for idx, b in enumerate(blocks):
+            if anchor in b and not b.startswith(("\\begin{table", "\\setcounter")):
                 blocks.insert(idx, block)
                 break
 

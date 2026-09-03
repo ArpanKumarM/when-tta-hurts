@@ -47,15 +47,27 @@ uv run python3 ../verify_manuscript_claims.py
 Run it against `../manuscript.md` after any prose edit, before
 regenerating `body.tex`.
 
-## Known polish TODOs (not blockers)
+## Polish status
 
-- Primary figures 1–5 carry a baked-in title bar from the original
-  evidence-package renderer that is redundant with the LaTeX `\caption`;
-  regenerate them title-less for the camera-ready.
-- Prose still double-cites ("Medeiros (2026) ... `\citep{medeiros2026tta}`");
-  convert textual mentions to `\citet{}` for the camera-ready.
-- Tables 1 and 7 are referenced in prose but not yet typeset as
-  `tabular` floats (content in `artifacts/paper_evidence/tables/`).
-- Add the three new Related Work citations (TENT, Ayhan & Berens,
-  Kimura) to `../references.bib` + `../citation_audit.md` with verified
-  sources, then `make bib`.
+Done:
+
+- Primary figures 1–5 re-rendered title-less and caption-less
+  (`scripts/render_tmlr_primary_figures.py`, which suppresses
+  `set_title`/`Figure.text`/`suptitle` around the unchanged evidence-
+  package plotting code — the sealed `artifacts/paper_evidence/` is not
+  touched).
+- Redundant textual + parenthetical double-citations collapsed to a
+  single `\citet` / `\citep` in `scripts/md_to_tex.py`.
+- Tables 1 and 7 typeset as `booktabs` floats (Table 7 keeps its number
+  via `\setcounter{table}{6}` so it matches the prose reference).
+- TENT (Wang et al., 2021), Ayhan & Berens (2018), and Kimura (2024)
+  added to `../references.bib` + `../citation_audit.md` (verified
+  against primary sources) and engaged in a new Related Work paragraph.
+
+Remaining (optional, for camera-ready):
+
+- 18 pages; trimming the audit-trail prose (Reproducibility section +
+  the "Process incidents" paragraph → supplementary note) would tighten
+  it. TMLR has no page limit.
+- Fill the real `\author{}` block and switch to
+  `\usepackage[preprint]{tmlr}` for the arXiv version.

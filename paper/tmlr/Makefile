@@ -19,8 +19,8 @@ body:
 	cd $(REPO) && uv run python scripts/md_to_tex.py
 
 figures:
+	cd $(REPO) && uv run --with matplotlib --with numpy python scripts/render_tmlr_primary_figures.py
 	cd $(REPO) && uv run --with matplotlib --with numpy python scripts/generate_extension_figures.py
-	cp $(REPO)/artifacts/paper_evidence/figures/figure_*.pdf figures/
 
 bib:
 	cd $(REPO) && python3 -c "import re,pathlib; s=pathlib.Path('paper/references.bib').read_text(); pathlib.Path('paper/tmlr/references.bib').write_text(re.sub(r'(?<!\\\\)_', r'\\\\_', s))"

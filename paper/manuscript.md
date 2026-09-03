@@ -211,6 +211,28 @@ presence of running statistics, so any normalization-conditioned
 difference we observe is evidence *consistent with*, not *proof of*, a
 running-statistics mechanism.
 
+**Test-time adaptation, medical-imaging TTA for uncertainty, and
+theory of TTA are adjacent lines we do not extend.** Beyond static
+BatchNorm-statistics recomputation, TENT (Wang et al., 2021) adapts a
+model online at test time by minimizing prediction entropy over each
+test batch, updating BatchNorm's affine parameters
+[@wang2021tent] -- a more active form of test-time adaptation than
+anything we evaluate; our study fixes the trained model and only
+aggregates augmented-view predictions. In medical imaging specifically,
+Ayhan and Berens (2018) use test-time augmentation not to improve
+point accuracy but to *estimate* predictive uncertainty from the
+variability of predictions across augmented views [@ayhan2018ttaug];
+our harm/rescue-rate reporting is adjacent to this uncertainty framing
+but we do not compute calibration-as-uncertainty from augmented-view
+dispersion. On the theory side, Kimura (2024) analyzes when TTA can
+help or hurt in terms of the diversity and error-correlation of the
+augmented-view predictions [@kimura2024understanding]; this is a
+complementary lens to the distribution-shift account we sketch in the
+Discussion, and we do not attempt a formal treatment. We list these to
+scope our contribution: we study *naive* mean-probability TTA with a
+fixed model, and do not propose or evaluate test-time adaptation, an
+uncertainty estimator, or a theoretical bound.
+
 **MedMNIST is the dataset family underlying this study.** MedMNIST v2
 (Yang et al., 2023, published in *Scientific Data*) provides
 standardized 28px classification benchmarks across biomedical imaging
@@ -238,16 +260,25 @@ question itself.
 
 **Novelty scope.** Taken together, the reviewed literature establishes
 that TTA harm, augmentation-policy mismatch as a plausible mitigation
-lever, and medical-imaging-specific TTA evaluation are all active,
-documented areas, and this study does not claim to originate any of
-them. The specific combination we did not find directly addressed in
-the sources reviewed -- comparing matched-versus-unmatched training
-policy as a fixed-model secondary difference-in-differences analysis,
-combined with a controlled normalization/resolution ablation, on the
-MedMNIST family, under a preregistered/secondary two-tier reporting
-discipline -- is offered as a narrow, non-exhaustively-verified gap,
-consistent with the novelty audit in
-`docs/phase2b_manuscript_claims_and_structure_freeze.md`.
+lever, medical-imaging-specific TTA evaluation, test-time adaptation,
+and a theory of when TTA helps are all active, documented areas, and
+this study does not claim to originate, or to advance the method
+frontier of, any of them. We propose no new TTA method, aggregator,
+adaptation procedure, uncertainty estimator, benchmark, or theoretical
+bound. What this study offers is a preregistered, fully audited
+replication and characterization: an independent verification of a
+circulating preprint's headline claim, a mechanically enforced
+preregistered-versus-secondary reporting discipline, and a post-review
+mechanistic localization (scaling curve, label-preservation audit,
+per-component decomposition) showing the harm is an
+augmentation-robustness effect rather than label destruction. The
+specific empirical combination we did not find directly addressed in
+the sources reviewed -- matched-versus-unmatched training policy as a
+fixed-model secondary difference-in-differences analysis, alongside a
+controlled normalization/resolution ablation, on the MedMNIST family,
+under a two-tier reporting discipline -- is offered as a narrow gap
+from a non-exhaustive review (no citation-graph traversal), not a
+claimed first.
 
 ## Methods
 
