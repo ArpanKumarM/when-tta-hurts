@@ -20,10 +20,16 @@ Classification," produced under
   verified, because the publisher pages returned HTTP 403).
 * `verify_manuscript_claims.py` -- a read-only verification script (see
   below) that checks the manuscript's numeric claims and required
-  wording against the canonical evidence package. It never reads raw
-  predictions, datasets, checkpoints, or sealed per-family analysis
-  results -- only `artifacts/final_test_scientific_summary.json` and
-  the committed `artifacts/paper_evidence/` tables/manifest.
+  wording against the canonical evidence package. For the Results
+  section it never reads raw predictions, datasets, checkpoints, or
+  sealed per-family analysis results -- only
+  `artifacts/final_test_scientific_summary.json` and the committed
+  `artifacts/paper_evidence/` tables/manifest. The post-review
+  "Extended Analyses" section is checked separately against its own
+  read-only summary artifacts
+  (`artifacts/secondary_analysis_expansion/summary.json`,
+  `artifacts/label_preservation_audit/summary.json`,
+  `artifacts/component_ablation/summary.json`).
 
 ## What this manuscript is and is not
 
@@ -44,7 +50,10 @@ trace to the canonical scientific summary
 (`artifacts/final_test_scientific_summary.json`), the committed
 paper-evidence tables (`artifacts/paper_evidence/tables/`), or the
 paper-evidence manifest
-(`artifacts/paper_evidence/paper_evidence_manifest.json`). No number was
+(`artifacts/paper_evidence/paper_evidence_manifest.json`). Every
+numerical statement in the post-review "Extended Analyses" section must
+likewise trace to one of the three post-review summary artifacts named
+above; `verify_manuscript_claims.py` enforces both. No number was
 hand-transcribed without the automated check in
 `verify_manuscript_claims.py` (and its test suite,
 `tests/test_verify_manuscript_claims.py`) passing.

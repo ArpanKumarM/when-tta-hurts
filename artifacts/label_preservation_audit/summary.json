@@ -1,0 +1,197 @@
+{
+  "annotation": "single annotator (frozen at protocol time); no inter-annotator kappa.",
+  "automated": {
+    "bloodmnist": {
+      "a_not_preserved": 0.1215625,
+      "blur_sigma": {
+        "mean": 0.5318541150540114,
+        "p05": 0.0,
+        "p50": 0.11741223186254501,
+        "p95": 1.819505202770233
+      },
+      "center_retained": {
+        "mean": 0.996957875,
+        "p05": 0.988,
+        "p50": 1.0,
+        "p95": 1.0
+      },
+      "crop_area_retained": {
+        "mean": 0.7820276626275511,
+        "p05": 0.7295918367346939,
+        "p50": 0.7653061224489796,
+        "p95": 0.8622448979591837
+      },
+      "foreground_retained": {
+        "mean": 0.99953125,
+        "p05": 1.0,
+        "p50": 1.0,
+        "p95": 1.0
+      },
+      "intensity_shift": {
+        "mean": 0.3013129054196179,
+        "p05": 0.09650403857231142,
+        "p50": 0.30259281396865845,
+        "p95": 0.5010576218366621
+      },
+      "n_views": 3200
+    },
+    "dermamnist": {
+      "a_not_preserved": 0.1340625,
+      "blur_sigma": {
+        "mean": 0.5288995891902596,
+        "p05": 0.0,
+        "p50": 0.14402496814727783,
+        "p95": 1.7960219860076905
+      },
+      "center_retained": {
+        "mean": 0.9973050000000001,
+        "p05": 0.9888,
+        "p50": 1.0,
+        "p95": 1.0
+      },
+      "crop_area_retained": {
+        "mean": 0.7817757493622449,
+        "p05": 0.7295918367346939,
+        "p50": 0.7653061224489796,
+        "p95": 0.8622448979591837
+      },
+      "foreground_retained": {
+        "mean": 0.95234375,
+        "p05": 0.6666666666666666,
+        "p50": 1.0,
+        "p95": 1.0
+      },
+      "intensity_shift": {
+        "mean": 0.3034416973404586,
+        "p05": 0.09711573719978334,
+        "p50": 0.30233484506607056,
+        "p95": 0.5085831135511398
+      },
+      "n_views": 3200
+    },
+    "pathmnist": {
+      "a_not_preserved": 0.1246875,
+      "blur_sigma": {
+        "mean": 0.5289572848798707,
+        "p05": 0.0,
+        "p50": 0.0,
+        "p95": 1.824440366029739
+      },
+      "center_retained": {
+        "mean": 0.9970154999999999,
+        "p05": 0.988,
+        "p50": 1.0,
+        "p95": 1.0
+      },
+      "crop_area_retained": {
+        "mean": 0.7829320790816325,
+        "p05": 0.7295918367346939,
+        "p50": 0.7653061224489796,
+        "p95": 0.8622448979591837
+      },
+      "foreground_retained": null,
+      "intensity_shift": {
+        "mean": 0.2991013490781188,
+        "p05": 0.09466511309146881,
+        "p50": 0.2979872226715088,
+        "p95": 0.5041520982980728
+      },
+      "n_views": 3200
+    }
+  },
+  "confirmatory_tta_seed": 1306178015,
+  "frozen_thresholds": {
+    "a_not_preserved_material": 0.25,
+    "center_min": {
+      "dermamnist": 0.7
+    },
+    "crop_area_min": 0.5,
+    "foreground_min": {
+      "bloodmnist": 0.6
+    },
+    "intensity_shift_max": 0.45,
+    "p_gone_material": 0.15
+  },
+  "human": {
+    "bloodmnist": {
+      "human_score_dist_when_auto_not_preserved": {
+        "0": 0.0,
+        "1": 0.0,
+        "2": 1.0
+      },
+      "human_score_dist_when_auto_preserved": {
+        "0": 0.0,
+        "1": 0.04,
+        "2": 0.96
+      },
+      "n_scored": 50,
+      "proxy_human_cohen_kappa": 0.0,
+      "proxy_human_raw_agreement": 0.5,
+      "score0_content_gone": 0.0,
+      "score1_partial": 0.02,
+      "score2_clear": 0.98
+    },
+    "dermamnist": {
+      "human_score_dist_when_auto_not_preserved": {
+        "0": 0.0,
+        "1": 0.0,
+        "2": 1.0
+      },
+      "human_score_dist_when_auto_preserved": {
+        "0": 0.04,
+        "1": 0.04,
+        "2": 0.92
+      },
+      "n_scored": 50,
+      "proxy_human_cohen_kappa": -0.040000000000000036,
+      "proxy_human_raw_agreement": 0.48,
+      "score0_content_gone": 0.02,
+      "score1_partial": 0.02,
+      "score2_clear": 0.96
+    },
+    "pathmnist": {
+      "human_score_dist_when_auto_not_preserved": {
+        "0": 0.08,
+        "1": 0.2,
+        "2": 0.72
+      },
+      "human_score_dist_when_auto_preserved": {
+        "0": 0.0,
+        "1": 0.28,
+        "2": 0.72
+      },
+      "n_scored": 50,
+      "proxy_human_cohen_kappa": 0.08000000000000007,
+      "proxy_human_raw_agreement": 0.54,
+      "score0_content_gone": 0.04,
+      "score1_partial": 0.24,
+      "score2_clear": 0.72
+    }
+  },
+  "human_scores_csv_sha256": "a0a95c8b0bb9056d2716cecad0cd008b60d9a87d970997eefefa898707b44ccf",
+  "n_human_per_dataset": 50,
+  "n_img_per_dataset": 200,
+  "n_view_per_image": 16,
+  "phase": "2C.2",
+  "protocol_sha256": "59bf3248a64013a406f5b83559fa85c073e5a068440dee07cfbfeab2843b8902",
+  "verdict": {
+    "bloodmnist": {
+      "a_not_preserved": 0.1215625,
+      "manuscript_action": "report both rates; state label non-preservation affects only a minority of views and is unlikely to be the dominant driver of this dataset's >=40pp harm; disclose residual uncertainty.",
+      "p_gone": 0.0,
+      "rule": "B_confound_unlikely_dominant"
+    },
+    "dermamnist": {
+      "a_not_preserved": 0.1340625,
+      "manuscript_action": "report both rates; state label non-preservation affects only a minority of views and is unlikely to be the dominant driver of this dataset's >=40pp harm; disclose residual uncertainty.",
+      "p_gone": 0.02,
+      "rule": "B_confound_unlikely_dominant"
+    },
+    "pathmnist": {
+      "a_not_preserved": 0.1246875,
+      "manuscript_action": "report both rates; state label non-preservation affects only a minority of views and is unlikely to be the dominant driver of this dataset's >=40pp harm; disclose residual uncertainty.",
+      "p_gone": 0.04,
+      "rule": "B_confound_unlikely_dominant"
+    }
+  }
+}

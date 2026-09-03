@@ -1,0 +1,18 @@
+{
+  "addendum_sha256": "7d52157c7ff522cb5811affd768e4a2a1f63ea7e15ae6abc972fc9e68473c8d3",
+  "confirmatory_tta_seed": 1306178015,
+  "input_checkpoints_sha256": {
+    "artifacts/confirmatory/A/A-bloodmnist-28px-batchnorm-policy-none-s0/attempt_001/best_checkpoint.pt": "e96e3b5615c71fba0fd05d21439c3d2a551ddba00985dbcc0b8affcfda5c519f",
+    "artifacts/confirmatory/A/A-bloodmnist-28px-batchnorm-policy-none-s1/attempt_001/best_checkpoint.pt": "1448dad9629f956c195e301dabe42047502ccf2981d6f4f3154f5994a35da98f",
+    "artifacts/confirmatory/A/A-bloodmnist-28px-batchnorm-policy-none-s2/attempt_001/best_checkpoint.pt": "552c975c860585e9b57298d2e1fd3550420b9ad696066d2fe7bef49401a235f0",
+    "artifacts/confirmatory/A/A-bloodmnist-28px-groupnorm-policy-none-s0/attempt_001/best_checkpoint.pt": "cd804a09e799f7d89c1e98dad10a63a953a9a5204d98d5fa4c5677b7937765bd",
+    "artifacts/confirmatory/A/A-bloodmnist-28px-groupnorm-policy-none-s1/attempt_001/best_checkpoint.pt": "d914f4ecd0d597b9cc422dd7e5b07413c900eaa084b0f0992575010dfd899928",
+    "artifacts/confirmatory/A/A-bloodmnist-28px-groupnorm-policy-none-s2/attempt_001/best_checkpoint.pt": "34a1b18158c3572f281035592f8a3af33eb2baa11055aa9a8c2e6a60d495741d",
+    "artifacts/confirmatory/A/A-pathmnist-28px-batchnorm-policy-none-s0/attempt_004/best_checkpoint.pt": "30bc1ca6ef364e2a8280d4f5d9df5c6860d839e92e8a619e979dd20dbd804b3e",
+    "artifacts/confirmatory/A/A-pathmnist-28px-batchnorm-policy-none-s1/attempt_001/best_checkpoint.pt": "f3be88438078ce362528dc8c3919e7d395fb095902cca48159c861b6e308e6bf",
+    "artifacts/confirmatory/A/A-pathmnist-28px-batchnorm-policy-none-s2/attempt_001/best_checkpoint.pt": "b8b971407b6b149d8e64e4bf55ec87f95a753cad5256aa5f3a57d419145d9c06",
+    "artifacts/confirmatory/A/A-pathmnist-28px-groupnorm-policy-none-s0/attempt_001/best_checkpoint.pt": "fcf6a2f41c136cadc012bab8726249062ed1a16290a98504b65903a96c234e98",
+    "artifacts/confirmatory/A/A-pathmnist-28px-groupnorm-policy-none-s1/attempt_002/best_checkpoint.pt": "b63d8c9b9a38b3520f5aeb971a4afb60d760a7bffc707a63ce6c344abe5a4650",
+    "artifacts/confirmatory/A/A-pathmnist-28px-groupnorm-policy-none-s2/attempt_001/best_checkpoint.pt": "483eaa5957f570981a43933d3985b714b56911abc75ccbdebf5db8c6cdc9cdd3"
+  }
+}

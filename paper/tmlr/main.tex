@@ -1,0 +1,39 @@
+\documentclass{article}
+
+% ---------------------------------------------------------------------------
+% TMLR style. For the anonymized submission, load with no option.
+% For the arXiv / camera-ready preprint, use: \usepackage[preprint]{tmlr}
+% and set \month / \year below.
+% ---------------------------------------------------------------------------
+\usepackage{tmlr}
+% \usepackage[preprint]{tmlr}
+% \def\month{MM}  \def\year{2026}
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\graphicspath{{figures/}}
+
+\title{When Test-Time Augmentation Hurts:\\A Controlled Study in Medical Image Classification}
+
+% Non-anonymized author block (used only with the preprint/accepted option):
+\author{%
+  Anonymous \\
+  Anonymous Affiliation \\
+  \texttt{anonymous@example.com}
+}
+
+\begin{document}
+\maketitle
+
+\input{body}
+
+\bibliographystyle{tmlr}
+\bibliography{references}
+
+\end{document}

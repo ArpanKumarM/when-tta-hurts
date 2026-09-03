@@ -95,6 +95,21 @@ artifacts/*
 # any other artifacts/ path.
 !artifacts/paper_evidence/
 !artifacts/paper_evidence/**
+# Phase 2C / 2C.2 post-review analyses: small, human-auditable summary
+# JSON + CSV tables that ARE the deliverable and back the manuscript's
+# "Extended Analyses" numeric-traceability check (same rationale as
+# artifacts/paper_evidence/ above). The bulky/regenerable parts stay
+# ignored: label_preservation_audit/views/ (PNG renders) and every
+# *.npz (already covered by the global *.npz rule, incl. the
+# component_ablation/_cache/ resume cache).
+!artifacts/secondary_analysis_expansion/
+!artifacts/secondary_analysis_expansion/**
+!artifacts/label_preservation_audit/
+!artifacts/label_preservation_audit/**
+artifacts/label_preservation_audit/views/
+!artifacts/component_ablation/
+!artifacts/component_ablation/**
+artifacts/component_ablation/_cache/
 
 # Python
 __pycache__/

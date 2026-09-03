@@ -1,0 +1,151 @@
+item_id,dataset,class,clean_png,aug_png
+bloodmnist-1183-12,bloodmnist,neutrophil,views/bloodmnist-1183-12__clean.png,views/bloodmnist-1183-12__aug.png
+pathmnist-4515-3,pathmnist,normal colon mucosa,views/pathmnist-4515-3__clean.png,views/pathmnist-4515-3__aug.png
+bloodmnist-1559-1,bloodmnist,lymphocyte,views/bloodmnist-1559-1__clean.png,views/bloodmnist-1559-1__aug.png
+bloodmnist-721-11,bloodmnist,neutrophil,views/bloodmnist-721-11__clean.png,views/bloodmnist-721-11__aug.png
+bloodmnist-1324-10,bloodmnist,eosinophil,views/bloodmnist-1324-10__clean.png,views/bloodmnist-1324-10__aug.png
+pathmnist-3702-6,pathmnist,normal colon mucosa,views/pathmnist-3702-6__clean.png,views/pathmnist-3702-6__aug.png
+bloodmnist-1000-2,bloodmnist,eosinophil,views/bloodmnist-1000-2__clean.png,views/bloodmnist-1000-2__aug.png
+pathmnist-8938-1,pathmnist,normal colon mucosa,views/pathmnist-8938-1__clean.png,views/pathmnist-8938-1__aug.png
+dermamnist-428-14,dermamnist,melanoma,views/dermamnist-428-14__clean.png,views/dermamnist-428-14__aug.png
+dermamnist-897-0,dermamnist,melanocytic nevi,views/dermamnist-897-0__clean.png,views/dermamnist-897-0__aug.png
+dermamnist-668-0,dermamnist,melanoma,views/dermamnist-668-0__clean.png,views/dermamnist-668-0__aug.png
+bloodmnist-479-9,bloodmnist,platelet,views/bloodmnist-479-9__clean.png,views/bloodmnist-479-9__aug.png
+pathmnist-1173-3,pathmnist,background,views/pathmnist-1173-3__clean.png,views/pathmnist-1173-3__aug.png
+dermamnist-99-3,dermamnist,melanocytic nevi,views/dermamnist-99-3__clean.png,views/dermamnist-99-3__aug.png
+bloodmnist-336-2,bloodmnist,erythroblast,views/bloodmnist-336-2__clean.png,views/bloodmnist-336-2__aug.png
+dermamnist-670-14,dermamnist,melanoma,views/dermamnist-670-14__clean.png,views/dermamnist-670-14__aug.png
+dermamnist-91-5,dermamnist,melanocytic nevi,views/dermamnist-91-5__clean.png,views/dermamnist-91-5__aug.png
+bloodmnist-778-9,bloodmnist,lymphocyte,views/bloodmnist-778-9__clean.png,views/bloodmnist-778-9__aug.png
+dermamnist-694-6,dermamnist,melanocytic nevi,views/dermamnist-694-6__clean.png,views/dermamnist-694-6__aug.png
+bloodmnist-1091-0,bloodmnist,neutrophil,views/bloodmnist-1091-0__clean.png,views/bloodmnist-1091-0__aug.png
+pathmnist-6556-4,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-6556-4__clean.png,views/pathmnist-6556-4__aug.png
+dermamnist-136-10,dermamnist,melanocytic nevi,views/dermamnist-136-10__clean.png,views/dermamnist-136-10__aug.png
+bloodmnist-140-3,bloodmnist,"immature granulocytes(myelocytes, metamyelocytes and promyelocytes)",views/bloodmnist-140-3__clean.png,views/bloodmnist-140-3__aug.png
+bloodmnist-1239-13,bloodmnist,monocyte,views/bloodmnist-1239-13__clean.png,views/bloodmnist-1239-13__aug.png
+pathmnist-7567-5,pathmnist,cancer-associated stroma,views/pathmnist-7567-5__clean.png,views/pathmnist-7567-5__aug.png
+dermamnist-488-1,dermamnist,melanocytic nevi,views/dermamnist-488-1__clean.png,views/dermamnist-488-1__aug.png
+bloodmnist-510-8,bloodmnist,eosinophil,views/bloodmnist-510-8__clean.png,views/bloodmnist-510-8__aug.png
+pathmnist-3939-13,pathmnist,debris,views/pathmnist-3939-13__clean.png,views/pathmnist-3939-13__aug.png
+dermamnist-934-15,dermamnist,melanocytic nevi,views/dermamnist-934-15__clean.png,views/dermamnist-934-15__aug.png
+pathmnist-2803-13,pathmnist,adipose,views/pathmnist-2803-13__clean.png,views/pathmnist-2803-13__aug.png
+pathmnist-4515-12,pathmnist,normal colon mucosa,views/pathmnist-4515-12__clean.png,views/pathmnist-4515-12__aug.png
+pathmnist-9337-13,pathmnist,background,views/pathmnist-9337-13__clean.png,views/pathmnist-9337-13__aug.png
+bloodmnist-1107-1,bloodmnist,lymphocyte,views/bloodmnist-1107-1__clean.png,views/bloodmnist-1107-1__aug.png
+dermamnist-961-0,dermamnist,melanocytic nevi,views/dermamnist-961-0__clean.png,views/dermamnist-961-0__aug.png
+pathmnist-7715-5,pathmnist,lymphocytes,views/pathmnist-7715-5__clean.png,views/pathmnist-7715-5__aug.png
+dermamnist-324-5,dermamnist,melanocytic nevi,views/dermamnist-324-5__clean.png,views/dermamnist-324-5__aug.png
+pathmnist-6798-2,pathmnist,lymphocytes,views/pathmnist-6798-2__clean.png,views/pathmnist-6798-2__aug.png
+dermamnist-89-12,dermamnist,melanocytic nevi,views/dermamnist-89-12__clean.png,views/dermamnist-89-12__aug.png
+bloodmnist-533-14,bloodmnist,neutrophil,views/bloodmnist-533-14__clean.png,views/bloodmnist-533-14__aug.png
+bloodmnist-370-4,bloodmnist,monocyte,views/bloodmnist-370-4__clean.png,views/bloodmnist-370-4__aug.png
+bloodmnist-301-15,bloodmnist,platelet,views/bloodmnist-301-15__clean.png,views/bloodmnist-301-15__aug.png
+pathmnist-5319-9,pathmnist,mucus,views/pathmnist-5319-9__clean.png,views/pathmnist-5319-9__aug.png
+dermamnist-914-2,dermamnist,benign keratosis-like lesions,views/dermamnist-914-2__clean.png,views/dermamnist-914-2__aug.png
+dermamnist-496-6,dermamnist,benign keratosis-like lesions,views/dermamnist-496-6__clean.png,views/dermamnist-496-6__aug.png
+dermamnist-808-0,dermamnist,melanocytic nevi,views/dermamnist-808-0__clean.png,views/dermamnist-808-0__aug.png
+bloodmnist-1589-2,bloodmnist,platelet,views/bloodmnist-1589-2__clean.png,views/bloodmnist-1589-2__aug.png
+bloodmnist-379-7,bloodmnist,neutrophil,views/bloodmnist-379-7__clean.png,views/bloodmnist-379-7__aug.png
+dermamnist-694-10,dermamnist,melanocytic nevi,views/dermamnist-694-10__clean.png,views/dermamnist-694-10__aug.png
+pathmnist-790-9,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-790-9__clean.png,views/pathmnist-790-9__aug.png
+bloodmnist-501-3,bloodmnist,lymphocyte,views/bloodmnist-501-3__clean.png,views/bloodmnist-501-3__aug.png
+dermamnist-934-9,dermamnist,melanocytic nevi,views/dermamnist-934-9__clean.png,views/dermamnist-934-9__aug.png
+bloodmnist-701-10,bloodmnist,monocyte,views/bloodmnist-701-10__clean.png,views/bloodmnist-701-10__aug.png
+dermamnist-100-6,dermamnist,melanocytic nevi,views/dermamnist-100-6__clean.png,views/dermamnist-100-6__aug.png
+pathmnist-7681-6,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-7681-6__clean.png,views/pathmnist-7681-6__aug.png
+pathmnist-3702-1,pathmnist,normal colon mucosa,views/pathmnist-3702-1__clean.png,views/pathmnist-3702-1__aug.png
+bloodmnist-1653-13,bloodmnist,platelet,views/bloodmnist-1653-13__clean.png,views/bloodmnist-1653-13__aug.png
+pathmnist-3356-13,pathmnist,smooth muscle,views/pathmnist-3356-13__clean.png,views/pathmnist-3356-13__aug.png
+bloodmnist-758-0,bloodmnist,platelet,views/bloodmnist-758-0__clean.png,views/bloodmnist-758-0__aug.png
+pathmnist-356-13,pathmnist,background,views/pathmnist-356-13__clean.png,views/pathmnist-356-13__aug.png
+pathmnist-338-13,pathmnist,smooth muscle,views/pathmnist-338-13__clean.png,views/pathmnist-338-13__aug.png
+dermamnist-422-12,dermamnist,benign keratosis-like lesions,views/dermamnist-422-12__clean.png,views/dermamnist-422-12__aug.png
+bloodmnist-835-5,bloodmnist,basophil,views/bloodmnist-835-5__clean.png,views/bloodmnist-835-5__aug.png
+dermamnist-420-6,dermamnist,benign keratosis-like lesions,views/dermamnist-420-6__clean.png,views/dermamnist-420-6__aug.png
+bloodmnist-356-7,bloodmnist,basophil,views/bloodmnist-356-7__clean.png,views/bloodmnist-356-7__aug.png
+pathmnist-8590-13,pathmnist,cancer-associated stroma,views/pathmnist-8590-13__clean.png,views/pathmnist-8590-13__aug.png
+dermamnist-450-8,dermamnist,melanocytic nevi,views/dermamnist-450-8__clean.png,views/dermamnist-450-8__aug.png
+pathmnist-2122-13,pathmnist,adipose,views/pathmnist-2122-13__clean.png,views/pathmnist-2122-13__aug.png
+bloodmnist-1113-8,bloodmnist,platelet,views/bloodmnist-1113-8__clean.png,views/bloodmnist-1113-8__aug.png
+dermamnist-726-10,dermamnist,melanoma,views/dermamnist-726-10__clean.png,views/dermamnist-726-10__aug.png
+pathmnist-9005-10,pathmnist,lymphocytes,views/pathmnist-9005-10__clean.png,views/pathmnist-9005-10__aug.png
+dermamnist-844-11,dermamnist,melanocytic nevi,views/dermamnist-844-11__clean.png,views/dermamnist-844-11__aug.png
+pathmnist-5122-10,pathmnist,adipose,views/pathmnist-5122-10__clean.png,views/pathmnist-5122-10__aug.png
+dermamnist-221-0,dermamnist,melanocytic nevi,views/dermamnist-221-0__clean.png,views/dermamnist-221-0__aug.png
+dermamnist-318-4,dermamnist,actinic keratoses and intraepithelial carcinoma,views/dermamnist-318-4__clean.png,views/dermamnist-318-4__aug.png
+dermamnist-784-2,dermamnist,melanocytic nevi,views/dermamnist-784-2__clean.png,views/dermamnist-784-2__aug.png
+bloodmnist-1094-12,bloodmnist,lymphocyte,views/bloodmnist-1094-12__clean.png,views/bloodmnist-1094-12__aug.png
+bloodmnist-1479-10,bloodmnist,lymphocyte,views/bloodmnist-1479-10__clean.png,views/bloodmnist-1479-10__aug.png
+pathmnist-4634-13,pathmnist,debris,views/pathmnist-4634-13__clean.png,views/pathmnist-4634-13__aug.png
+dermamnist-735-7,dermamnist,melanoma,views/dermamnist-735-7__clean.png,views/dermamnist-735-7__aug.png
+bloodmnist-756-3,bloodmnist,lymphocyte,views/bloodmnist-756-3__clean.png,views/bloodmnist-756-3__aug.png
+bloodmnist-471-2,bloodmnist,basophil,views/bloodmnist-471-2__clean.png,views/bloodmnist-471-2__aug.png
+bloodmnist-1479-5,bloodmnist,lymphocyte,views/bloodmnist-1479-5__clean.png,views/bloodmnist-1479-5__aug.png
+dermamnist-750-1,dermamnist,melanocytic nevi,views/dermamnist-750-1__clean.png,views/dermamnist-750-1__aug.png
+dermamnist-769-10,dermamnist,melanocytic nevi,views/dermamnist-769-10__clean.png,views/dermamnist-769-10__aug.png
+pathmnist-3737-8,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-3737-8__clean.png,views/pathmnist-3737-8__aug.png
+bloodmnist-721-15,bloodmnist,neutrophil,views/bloodmnist-721-15__clean.png,views/bloodmnist-721-15__aug.png
+pathmnist-2631-15,pathmnist,debris,views/pathmnist-2631-15__clean.png,views/pathmnist-2631-15__aug.png
+pathmnist-2833-8,pathmnist,lymphocytes,views/pathmnist-2833-8__clean.png,views/pathmnist-2833-8__aug.png
+dermamnist-186-13,dermamnist,melanocytic nevi,views/dermamnist-186-13__clean.png,views/dermamnist-186-13__aug.png
+pathmnist-4513-1,pathmnist,mucus,views/pathmnist-4513-1__clean.png,views/pathmnist-4513-1__aug.png
+pathmnist-7067-0,pathmnist,smooth muscle,views/pathmnist-7067-0__clean.png,views/pathmnist-7067-0__aug.png
+dermamnist-136-9,dermamnist,melanocytic nevi,views/dermamnist-136-9__clean.png,views/dermamnist-136-9__aug.png
+dermamnist-661-3,dermamnist,melanocytic nevi,views/dermamnist-661-3__clean.png,views/dermamnist-661-3__aug.png
+bloodmnist-124-4,bloodmnist,monocyte,views/bloodmnist-124-4__clean.png,views/bloodmnist-124-4__aug.png
+dermamnist-286-0,dermamnist,melanoma,views/dermamnist-286-0__clean.png,views/dermamnist-286-0__aug.png
+dermamnist-88-2,dermamnist,melanocytic nevi,views/dermamnist-88-2__clean.png,views/dermamnist-88-2__aug.png
+bloodmnist-1403-15,bloodmnist,platelet,views/bloodmnist-1403-15__clean.png,views/bloodmnist-1403-15__aug.png
+bloodmnist-1652-14,bloodmnist,eosinophil,views/bloodmnist-1652-14__clean.png,views/bloodmnist-1652-14__aug.png
+pathmnist-3593-4,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-3593-4__clean.png,views/pathmnist-3593-4__aug.png
+dermamnist-299-5,dermamnist,benign keratosis-like lesions,views/dermamnist-299-5__clean.png,views/dermamnist-299-5__aug.png
+bloodmnist-1641-9,bloodmnist,neutrophil,views/bloodmnist-1641-9__clean.png,views/bloodmnist-1641-9__aug.png
+pathmnist-4060-2,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-4060-2__clean.png,views/pathmnist-4060-2__aug.png
+dermamnist-61-7,dermamnist,melanocytic nevi,views/dermamnist-61-7__clean.png,views/dermamnist-61-7__aug.png
+bloodmnist-295-10,bloodmnist,neutrophil,views/bloodmnist-295-10__clean.png,views/bloodmnist-295-10__aug.png
+bloodmnist-278-0,bloodmnist,eosinophil,views/bloodmnist-278-0__clean.png,views/bloodmnist-278-0__aug.png
+bloodmnist-66-13,bloodmnist,lymphocyte,views/bloodmnist-66-13__clean.png,views/bloodmnist-66-13__aug.png
+pathmnist-8101-5,pathmnist,normal colon mucosa,views/pathmnist-8101-5__clean.png,views/pathmnist-8101-5__aug.png
+pathmnist-878-9,pathmnist,cancer-associated stroma,views/pathmnist-878-9__clean.png,views/pathmnist-878-9__aug.png
+dermamnist-516-9,dermamnist,basal cell carcinoma,views/dermamnist-516-9__clean.png,views/dermamnist-516-9__aug.png
+pathmnist-1396-9,pathmnist,adipose,views/pathmnist-1396-9__clean.png,views/pathmnist-1396-9__aug.png
+bloodmnist-835-8,bloodmnist,basophil,views/bloodmnist-835-8__clean.png,views/bloodmnist-835-8__aug.png
+bloodmnist-1356-11,bloodmnist,basophil,views/bloodmnist-1356-11__clean.png,views/bloodmnist-1356-11__aug.png
+pathmnist-531-6,pathmnist,background,views/pathmnist-531-6__clean.png,views/pathmnist-531-6__aug.png
+pathmnist-1014-11,pathmnist,smooth muscle,views/pathmnist-1014-11__clean.png,views/pathmnist-1014-11__aug.png
+dermamnist-209-12,dermamnist,melanoma,views/dermamnist-209-12__clean.png,views/dermamnist-209-12__aug.png
+dermamnist-476-14,dermamnist,melanocytic nevi,views/dermamnist-476-14__clean.png,views/dermamnist-476-14__aug.png
+dermamnist-152-10,dermamnist,benign keratosis-like lesions,views/dermamnist-152-10__clean.png,views/dermamnist-152-10__aug.png
+bloodmnist-242-15,bloodmnist,neutrophil,views/bloodmnist-242-15__clean.png,views/bloodmnist-242-15__aug.png
+pathmnist-7983-2,pathmnist,lymphocytes,views/pathmnist-7983-2__clean.png,views/pathmnist-7983-2__aug.png
+pathmnist-5375-2,pathmnist,background,views/pathmnist-5375-2__clean.png,views/pathmnist-5375-2__aug.png
+pathmnist-5674-11,pathmnist,cancer-associated stroma,views/pathmnist-5674-11__clean.png,views/pathmnist-5674-11__aug.png
+dermamnist-268-12,dermamnist,melanoma,views/dermamnist-268-12__clean.png,views/dermamnist-268-12__aug.png
+bloodmnist-883-13,bloodmnist,eosinophil,views/bloodmnist-883-13__clean.png,views/bloodmnist-883-13__aug.png
+pathmnist-3096-6,pathmnist,adipose,views/pathmnist-3096-6__clean.png,views/pathmnist-3096-6__aug.png
+pathmnist-5196-11,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-5196-11__clean.png,views/pathmnist-5196-11__aug.png
+pathmnist-3356-0,pathmnist,smooth muscle,views/pathmnist-3356-0__clean.png,views/pathmnist-3356-0__aug.png
+dermamnist-100-2,dermamnist,melanocytic nevi,views/dermamnist-100-2__clean.png,views/dermamnist-100-2__aug.png
+bloodmnist-533-10,bloodmnist,neutrophil,views/bloodmnist-533-10__clean.png,views/bloodmnist-533-10__aug.png
+bloodmnist-278-11,bloodmnist,eosinophil,views/bloodmnist-278-11__clean.png,views/bloodmnist-278-11__aug.png
+dermamnist-185-1,dermamnist,benign keratosis-like lesions,views/dermamnist-185-1__clean.png,views/dermamnist-185-1__aug.png
+bloodmnist-756-10,bloodmnist,lymphocyte,views/bloodmnist-756-10__clean.png,views/bloodmnist-756-10__aug.png
+pathmnist-509-11,pathmnist,debris,views/pathmnist-509-11__clean.png,views/pathmnist-509-11__aug.png
+dermamnist-657-14,dermamnist,melanocytic nevi,views/dermamnist-657-14__clean.png,views/dermamnist-657-14__aug.png
+bloodmnist-745-10,bloodmnist,neutrophil,views/bloodmnist-745-10__clean.png,views/bloodmnist-745-10__aug.png
+pathmnist-1158-6,pathmnist,background,views/pathmnist-1158-6__clean.png,views/pathmnist-1158-6__aug.png
+dermamnist-136-15,dermamnist,melanocytic nevi,views/dermamnist-136-15__clean.png,views/dermamnist-136-15__aug.png
+pathmnist-6016-14,pathmnist,normal colon mucosa,views/pathmnist-6016-14__clean.png,views/pathmnist-6016-14__aug.png
+bloodmnist-1161-8,bloodmnist,platelet,views/bloodmnist-1161-8__clean.png,views/bloodmnist-1161-8__aug.png
+bloodmnist-743-8,bloodmnist,"immature granulocytes(myelocytes, metamyelocytes and promyelocytes)",views/bloodmnist-743-8__clean.png,views/bloodmnist-743-8__aug.png
+pathmnist-469-2,pathmnist,mucus,views/pathmnist-469-2__clean.png,views/pathmnist-469-2__aug.png
+dermamnist-243-2,dermamnist,melanocytic nevi,views/dermamnist-243-2__clean.png,views/dermamnist-243-2__aug.png
+bloodmnist-1161-4,bloodmnist,platelet,views/bloodmnist-1161-4__clean.png,views/bloodmnist-1161-4__aug.png
+pathmnist-7533-1,pathmnist,colorectal adenocarcinoma epithelium,views/pathmnist-7533-1__clean.png,views/pathmnist-7533-1__aug.png
+dermamnist-160-14,dermamnist,melanocytic nevi,views/dermamnist-160-14__clean.png,views/dermamnist-160-14__aug.png
+bloodmnist-1198-2,bloodmnist,monocyte,views/bloodmnist-1198-2__clean.png,views/bloodmnist-1198-2__aug.png
+pathmnist-9337-10,pathmnist,background,views/pathmnist-9337-10__clean.png,views/pathmnist-9337-10__aug.png
+pathmnist-8291-11,pathmnist,debris,views/pathmnist-8291-11__clean.png,views/pathmnist-8291-11__aug.png
+pathmnist-263-4,pathmnist,background,views/pathmnist-263-4__clean.png,views/pathmnist-263-4__aug.png
+dermamnist-920-15,dermamnist,melanoma,views/dermamnist-920-15__clean.png,views/dermamnist-920-15__aug.png
+dermamnist-297-4,dermamnist,melanocytic nevi,views/dermamnist-297-4__clean.png,views/dermamnist-297-4__aug.png

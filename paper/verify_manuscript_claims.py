@@ -34,6 +34,16 @@ CITATION_AUDIT_PATH = REPO_ROOT / "paper" / "citation_audit.md"
 PAPER_EVIDENCE_TABLES_DIR = REPO_ROOT / "artifacts" / "paper_evidence" / "tables"
 PAPER_EVIDENCE_MANIFEST_PATH = REPO_ROOT / "artifacts" / "paper_evidence" / "paper_evidence_manifest.json"
 
+# Post-review "Extended Analyses" section: its numbers trace to these
+# read-only summary artifacts rather than the sealed paper-evidence
+# package. Checked by check_extended_numeric_claims() below.
+EXTENDED_SECTION_HEADING = "Extended Analyses (Post-Review)"
+EXTENDED_SUMMARY_PATHS = (
+    REPO_ROOT / "artifacts" / "secondary_analysis_expansion" / "summary.json",
+    REPO_ROOT / "artifacts" / "label_preservation_audit" / "summary.json",
+    REPO_ROOT / "artifacts" / "component_ablation" / "summary.json",
+)
+
 REQUIRED_FIGURES = tuple(f"Figure {i}" for i in range(1, 6))
 REQUIRED_TABLES = tuple(f"Table {i}" for i in range(1, 8))
 
@@ -187,6 +197,54 @@ def check_numeric_claims(results_text: str) -> list[str]:
     return violations
 
 
+def _walk_numbers(obj: Any):
+    """Yield every int/float found anywhere in a nested JSON structure."""
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, (int, float)):
+        yield float(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _walk_numbers(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_numbers(v)
+
+
+def build_known_good_extended_numbers() -> set[str]:
+    """Every decimal that may legitimately appear in the 'Extended
+    Analyses' section, derived mechanically from the three post-review
+    summary artifacts. For each stored value v we allow-list v and v*100
+    (some fields are fractions, some are already percentage points), each
+    at one and two decimal places, signed and absolute."""
+    known: set[str] = set()
+    for path in EXTENDED_SUMMARY_PATHS:
+        if not path.exists():
+            raise ManuscriptVerificationError(f"{path} does not exist (needed for Extended Analyses check).")
+        data = json.loads(path.read_text())
+        for v in _walk_numbers(data):
+            for scaled in (v, v * 100.0):
+                for nd in (1, 2):
+                    known.add(f"{scaled:.{nd}f}")
+                    known.add(f"{abs(scaled):.{nd}f}")
+    return known
+
+
+def check_extended_numeric_claims(raw_text: str) -> list[str]:
+    section = extract_section(raw_text, EXTENDED_SECTION_HEADING, ("Limitations",))
+    if not section.strip():
+        return [f"Manuscript has no non-empty '## {EXTENDED_SECTION_HEADING}' section."]
+    known_good = build_known_good_extended_numbers()
+    violations = []
+    for number in sorted(extract_decimal_numbers(section)):
+        if number.lstrip("-") not in known_good and number not in known_good:
+            violations.append(
+                f"Extended-Analyses number {number!r} does not match any value in the post-review "
+                f"summary artifacts."
+            )
+    return violations
+
+
 def check_required_wording(full_text: str) -> list[str]:
     return [f"Required wording missing: {phrase!r}" for phrase in REQUIRED_WORDING if phrase not in full_text]
 
@@ -293,6 +351,7 @@ def run_all_checks() -> dict[str, Any]:
 
     checks: dict[str, list[str]] = {
         "numeric_claims_in_results": check_numeric_claims(results_text),
+        "numeric_claims_in_extended_analyses": check_extended_numeric_claims(raw_text),
         "required_wording": check_required_wording(full_text),
         "forbidden_phrases": check_forbidden_phrases(full_text),
         "figures_and_tables_referenced": check_figures_and_tables_referenced(full_text),

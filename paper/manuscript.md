@@ -23,17 +23,26 @@ training seeds, plus a fixed 128px extension and a DermaMNIST/ResNet-18
 positive-control replication. Within 30 distinct trained-model cells
 evaluated under a fixed mixed augmentation policy at N=50 views, naive
 TTA reduced test accuracy relative to a single clean forward pass in
-**all 30 cells**, with per-cell drops ranging from 18.76 to 66.09
-percentage points. A separate, non-preregistered secondary analysis
+every cell, with per-cell drops ranging from 18.76 to 66.09
+percentage points; these 30 cells span roughly eight to ten underlying
+dataset/resolution/normalization configurations, each replicated over
+three seeds, and the claim is a within-model one rather than a
+population replication. A separate, non-preregistered secondary analysis
 comparing models trained with a training-time augmentation policy
 matched to the test-time TTA policy against models trained without that
-match found six of six fixed-model paired comparisons favoring the
-matched-policy models, with every 95% confidence interval excluding
-zero. Normalization and resolution showed heterogeneous, dataset-
-dependent secondary patterns rather than a single consistent
-mitigation. A positive-control replication (DermaMNIST, ResNet-18) did
-not reproduce the positive TTA effect reported by the source study we
-build on. We report these findings using an explicit two-tier
+match found all six fixed-model paired comparisons favoring the
+matched-policy models, each 95% confidence interval excluding zero.
+Normalization and resolution showed heterogeneous, dataset-dependent
+secondary patterns rather than a single consistent mitigation. A
+positive-control replication (DermaMNIST, ResNet-18) did not reproduce
+the positive TTA effect reported by the source study we build on. A
+post-review extension shows the harm is stable across view counts from
+1 to 100 (worst at N=1); that the labeled diagnostic structure survives
+in the large majority of augmented views (human-judged lost in 0-4% per
+dataset); and that a geometric-only augmentation family -- which
+preserves image content -- still causes harm on its own, indicating the
+effect is a failure of augmentation robustness rather than
+label destruction. We report these findings using an explicit two-tier
 evidentiary framework -- preregistered within-cell evidence versus
 secondary fixed-model comparisons -- to avoid overstating what a
 non-preregistered cross-condition comparison can support, and we
@@ -122,6 +131,24 @@ its empirical findings: every numeric claim below is labeled with the
 tier of evidence it is drawn from, and Table 1 in the Experimental
 Design section makes that labeling explicit before any result is
 presented.
+
+**Contributions.** (i) A preregistered, statistically audited
+replication showing naive mixed-policy TTA reduced test accuracy in
+every one of 30 distinct trained-model cells on three MedMNIST
+datasets, with a fully hash-verified, independently re-checkable
+evidence chain. (ii) An end-to-end, mechanically enforced separation of
+preregistered within-cell evidence from secondary cross-condition
+evidence, offered as a reusable reporting discipline for empirical TTA
+studies. (iii) Secondary fixed-model evidence that training-time /
+test-time augmentation-policy matching mitigates the harm, reported
+with its non-confirmatory status made explicit. (iv) A post-review
+mechanistic extension -- a view-count scaling curve, a label-
+preservation audit, and a per-augmentation-component decomposition --
+that localizes the effect as a failure of augmentation robustness
+(present even for a content-preserving geometric-only policy) rather
+than a consequence of the augmentation destroying labeled content.
+(v) A public release of the full evidence, audit trail, and a
+standalone one-command reproduction.
 
 ## Related Work
 
@@ -601,6 +628,106 @@ situate our numbers relative to the literature, not to adjudicate whose
 measurement is more accurate -- a claim neither this manuscript nor a
 single independent replication attempt is positioned to make.
 
+## Extended Analyses (Post-Review)
+
+The analyses in this section were added after an internal review round
+that identified two gaps: the primary result was reported only at a
+single view budget (N=50), and it did not rule out the possibility that
+the fixed mixed policy simply removes the labeled diagnostic content
+from a substantial fraction of augmented views. Except for the
+view-count scaling curve -- which was preregistered in the protocol as
+a secondary/descriptive analysis -- these analyses were specified and
+run after the final-test unsealing and are therefore reported as
+secondary / exploratory. Every number below traces to a machine-
+readable summary artifact (`artifacts/secondary_analysis_expansion/`,
+`artifacts/label_preservation_audit/`, `artifacts/component_ablation/`)
+produced by a read-only script, and is checked by the same manuscript
+verification tool used for the Results section.
+
+**View-count scaling curve.** Re-aggregating the already-computed
+100-view sequence at N in {1, 2, 5, 10, 25, 50, 100} for the 30
+unmatched-policy cells, naive mixed-policy mean-probability TTA reduced
+accuracy at every view count, in every cell, with each per-cell 95%
+confidence interval excluding zero on the negative side at every N. The
+harm was largest at N=1 (mean -49.41 percentage points), decreased
+monotonically as views were added, and had flattened by roughly N=25;
+the preregistered primary condition N=50 (mean -42.56 percentage
+points) sits on this asymptote, and N=100 (mean -42.42 percentage
+points) is essentially identical. The curve never crosses zero and
+never reverses direction, so N=50 is close to the least-harmful
+operating point across the registered range rather than an
+unrepresentative choice (Figure 6).
+
+**Label-preservation audit.** For the frozen mixed policy at 28px we
+sampled 200 validation images per dataset, generated 16 augmented views
+each, recovered the actual sampled transform parameters, and applied a
+preregistered per-dataset "content-preserved" rule; a single annotator
+then scored a blinded, proxy-stratified subset of 50 augmented views
+per dataset on a three-point content-presence scale (not a diagnostic
+judgement). The labeled structure was judged clearly present in the
+large majority of views and judged lost ("gone") in 0.0% of BloodMNIST
+views, 2.0% of DermaMNIST views, and 4.0% of PathMNIST views. The
+geometric transforms almost never displaced the labeled content: the
+random resized crop retained about 78% of image area on average and
+close to 100% of the image centre. Under the audit's preregistered
+interpretation rule -- "confound is material" if the human lost-content
+rate reaches 15% or the automated not-preserved rate reaches 25% -- all
+three datasets fell in the "unlikely to dominate" branch. The automated
+proxy flagged about 12.2%, 12.5%, and 13.4% of views (BloodMNIST,
+PathMNIST, DermaMNIST) as not preserved, driven almost entirely by
+strong brightness/contrast jitter; the human check did not corroborate
+this as content loss, so the automated rate is reported only as a
+conservative upper bound (Figure 8).
+
+**Per-augmentation-component decomposition.** Splitting the mixed
+policy into its geometric family (flips, rotation, resized crop) and
+its intensity family (brightness/contrast jitter, Gaussian blur) and
+running each alone on the 12 Block A 28px cells (validation split,
+reusing the trained checkpoints), geometric-only TTA reduced accuracy
+by a mean of 26.20 percentage points and intensity-only TTA by a mean
+of 23.34 percentage points at N=50 (26.30 and 25.10 percentage points
+at the preregistered N=25); every one of the 12 cells showed a negative
+delta with a 95% confidence interval excluding zero for both families
+at both view counts. Neither family dominated (their mean magnitudes
+differ by under 15%), and the mixed-policy harm (mean -43.48 percentage
+points at N=50) was smaller than the sum of the two single-family
+harms, i.e. sub-additive (additivity residual +6.06 percentage points).
+Because the geometric-only family is content-preserving (per the audit
+above) yet still collapses accuracy by roughly a quarter, the harm is
+not attributable to the augmentation destroying labeled content; it is
+an input-distribution-shift effect -- these models, trained without
+augmentation, have little robustness to augmented inputs of either
+family, and naive averaging over such views amplifies rather than
+cancels that fragility (Figure 7).
+
+**Other secondary conditions.** From the same already-computed
+final-test predictions we also extracted three source-study Appendix-B
+baselines and one robustness check, all preregistered as secondary and
+none a contribution of this work. BatchNorm-statistics adaptation
+reduced the harm relative to naive TTA (by roughly 11 to 27 percentage
+points on the two SmallCNN datasets) but did not restore accuracy
+(still roughly 10 to 16 percentage points below clean), so BatchNorm's
+running statistics are part but not all of the mechanism. Clean-image
+anchoring reduced the mean harm only modestly (to roughly -31
+percentage points at N=50) and did not reproduce the large rescue the
+source study reported for that condition. Replacing mean-probability
+aggregation with majority vote or confidence-weighted averaging changed
+the mean harm by about one percentage point, so the effect is not an
+artifact of the aggregation rule. Naive TTA also roughly doubled
+expected calibration error and increased negative log-likelihood and
+multiclass Brier score by a factor of about two and a half; BatchNorm
+adaptation recovered much of the likelihood/Brier inflation but not the
+calibration-error inflation.
+
+**What this resolves.** Together the label-preservation audit and the
+component decomposition answer the augmentation-severity question: the
+observed harm is not explained by the mixed policy removing the labeled
+class from augmented views. It is better described as these models
+having essentially no robustness to augmentation-induced distribution
+shift -- geometric or photometric -- which naive TTA then amplifies.
+This reframes the paper's account of the effect without altering the
+primary within-cell result, which is unchanged.
+
 ## Limitations
 
 **Design and coverage limitations.** Only three training seeds per
@@ -617,6 +744,20 @@ as a fixed statistical procedure after validation-stage results were
 already observed, but before the official test split was opened; we
 disclose this ordering explicitly rather than presenting these
 comparisons with confirmatory status.
+
+**Limitations of the post-review extension.** The per-augmentation-
+component decomposition was run on the validation split, not the test
+split, and covers only the 12 Block A 28px cells (SmallCNN,
+PathMNIST/BloodMNIST, three seeds) -- not ResNet-18, DermaMNIST, 64/128px,
+or the matched-policy arm -- so its family-level attribution should not
+be read as generalizing across architectures. The label-preservation
+audit used a single annotator, is limited to 28px, and its content-
+presence task is deliberately not a clinical judgement; its automated
+structural proxy over-flags on intensity jitter and is reported only as
+a conservative upper bound. Apart from the preregistered view-count
+scaling curve, every analysis in the "Extended Analyses" section was
+specified after the final-test unsealing and is exploratory, not
+confirmatory.
 
 **Process incidents disclosed for completeness.** During execution, one
 final-test cell experienced an accidental final-test access incident on
@@ -673,9 +814,18 @@ verification script (`paper/verify_manuscript_claims.py`, described in
 against that evidence package and rejects known-forbidden phrasings
 (e.g. "54 distinct cells," any secondary-significance language, any H4
 claim); this manuscript was not considered complete until that script
-passed. No script or test described here accesses raw predictions, the
-underlying image datasets, or model checkpoints -- only the already-
-sealed, already-verified summary and evidence-package artifacts.
+passed. The numeric claims in the "Extended Analyses" section are
+checked by the same script against their own read-only summary
+artifacts (`artifacts/secondary_analysis_expansion/summary.json`,
+`artifacts/label_preservation_audit/summary.json`,
+`artifacts/component_ablation/summary.json`), each produced by a
+committed script that reads only already-sealed predictions, the
+validation split, or the trained checkpoints -- never the test-split
+model outputs beyond the already-unsealed canonical summary. No script
+or test described here accesses raw predictions, the underlying image
+datasets, or model checkpoints for the primary result -- only the
+already-sealed, already-verified summary and evidence-package
+artifacts.
 
 ## Conclusion
 
@@ -688,12 +838,18 @@ augmentation policy to the test-time TTA policy mitigates this harm,
 while normalization and resolution show heterogeneous, dataset-dependent
 secondary patterns rather than a single consistent mitigation, and an
 internal positive-control replication did not reproduce the one
-previously reported case of TTA helping in this setting. We report all
-of this using an explicit evidentiary hierarchy that separates
-confirmatory within-cell results from secondary cross-condition
-comparisons, and we release the complete, hash-verified evidence and
-audit trail alongside this manuscript so that every reported number can
-be independently mechanically re-checked.
+previously reported case of TTA helping in this setting. A post-review
+extension establishes that the harm is stable across view counts from 1
+to 100, that augmented views overwhelmingly retain the labeled
+structure, and that a content-preserving geometric-only augmentation
+family causes harm on its own -- so the effect is best understood as a
+lack of augmentation robustness in these models rather than as the
+augmentation destroying labeled content. We report all of this using an
+explicit evidentiary hierarchy that separates confirmatory within-cell
+results from secondary cross-condition comparisons, and we release the
+complete, hash-verified evidence and audit trail alongside this
+manuscript so that every reported number can be independently
+mechanically re-checked.
 
 ---
 
@@ -779,3 +935,20 @@ supplementary content is future work.)*
   (fingerprint values, authorization chain, generation history) --
   `docs/phase2b_paper_evidence_package.md` and the referenced Phase
   2B.6-2B.9 documents.
+- **Supplementary Table 8**: view-count scaling curve, per-cell delta
+  accuracy and 95% CI at N in {1,2,5,10,25,50,100} --
+  `artifacts/secondary_analysis_expansion/tables/scaling_curve.csv`.
+- **Supplementary Table 9**: BatchNorm-adaptation, clean-anchoring, and
+  aggregation-rule secondary conditions per cell --
+  `artifacts/secondary_analysis_expansion/tables/{bn_adaptation,anchored,aggregation_ablation}.csv`.
+- **Supplementary Table 10**: label-preservation audit -- per-view
+  proxy quantities (9,600 rows) and per-dataset human/automated rates --
+  `artifacts/label_preservation_audit/{per_view.csv,summary.json}`.
+- **Supplementary Table 11**: per-augmentation-component decomposition,
+  12 cells x {geometric, intensity} x {N=25, N=50} --
+  `artifacts/component_ablation/per_cell.csv`.
+- **Supplementary Note D**: post-review extension protocols and
+  findings -- `docs/phase2c_secondary_analysis_expansion_plan.md`,
+  `docs/phase2c2_label_preservation_audit_protocol.md`,
+  `docs/phase2c2_component_ablation_addendum.md`, and the three
+  corresponding `*_findings.md`.
